@@ -10,56 +10,67 @@ app.get('/', (req, res) => {
 });
 
 app.post('/api/play', (req, res) => {
-    const { uid, game, betAmount } = req.body;
-    
-    let multiplier = 0;
-    let rnd = Math.random() * 100;
+    try {
+        const { uid, game, betAmount } = req.body;
+        
+        let multiplier = 0;
+        let rnd = Math.random() * 100;
+        
+        // Game ka naam properly read karna (chhoti ABCD mein)
+        let gameName = game ? game.toLowerCase() : "";
 
-    // 1. EXACT 1.8X PAYOUT GAMES (Dice, Color, Flip, Cups)
-    if (game === "Lucky Dice" || game === "Lucky Color" || game === "Coin Flip" || game === "Magic Cups") {
-        multiplier = (rnd < 45) ? 1.8 : 0; // 45% Win Chance, Exact 1.8x Payout
-    } 
-    // 2. VIP SLOTS MATH
-    else if (game === "VIP Slots") {
-        if (rnd < 65) multiplier = 0;
-        else if (rnd < 90) multiplier = 1.2;
-        else if (rnd < 98) multiplier = 2.5;
-        else if (rnd < 99.5) multiplier = 5.0;
-        else multiplier = 20.0;
-    }
-    // 3. PLINKO MATH
-    else if (game === "Plinko Pro") {
-        if (rnd < 40) multiplier = 0;
-        else if (rnd < 75) multiplier = 1.2;
-        else if (rnd < 90) multiplier = 1.4;
-        else if (rnd < 97) multiplier = 1.6;
-        else multiplier = 2.0;
-    }
-    // 4. VORTEX MATH
-    else if (game === "Vortex") {
-        if (rnd < 60) multiplier = 0;
-        else if (rnd < 85) multiplier = 1.2;
-        else if (rnd < 95) multiplier = 1.5;
-        else multiplier = 2.0;
-    }
-    // 5. INTERACTIVE GAMES (Mines, Hi-Lo, Chicken Road) - Target Limits
-    else if (game === "VIP Hi-Lo" || game === "VIP Mines" || game === "Chicken Road") {
-        if (rnd < 40) multiplier = 0;        // 40% chance: Crash Immediately
-        else if (rnd < 70) multiplier = 1.5; // 30% chance: Let them win a little
-        else if (rnd < 90) multiplier = 2.5; // 20% chance: Medium win
-        else multiplier = 5.0;               // 10% chance: Big win
-    }
-    else {
-        multiplier = (rnd < 40) ? 1.5 : 0; // Default safety fallback
-    }
+        // 🛑 1. STRICT 1.8X PAYOUT GAMES (Dice, Color, Toss, Flip, Cups)
+        if (gameName.includes("dice") || gameName.includes("color") || gameName.includes("toss") || gameName.includes("flip") || gameName.includes("cup")) {
+            let winChance = (betAmount >= 500) ? 20 : 40; // Whales ko sirf 20% win chance, normals ko 40%
+            multiplier = (rnd < winChance) ? 1.8 : 0; 
+        } 
+        // 🛑 2. VIP SLOTS / MEGA SLOTS
+        else if (gameName.includes("slot")) {
+            if (rnd < 70) multiplier = 0;           // 70% Loss
+            else if (rnd < 90) multiplier = 1.2;    // 20% Small Win
+            else if (rnd < 97) multiplier = 2.5;    // 7% Medium Win
+            else if (rnd < 99.5) multiplier = 5.0;  // 2.5% Big Win
+            else multiplier = 20.0;                 // 0.5% Jackpot
+        }
+        // 🛑 3. PLINKO PRO
+        else if (gameName.includes("plinko")) {
+            if (rnd < 45) multiplier = 0;
+            else if (rnd < 80) multiplier = 1.2;
+            else if (rnd < 93) multiplier = 1.4;
+            else if (rnd < 98) multiplier = 1.6;
+            else multiplier = 2.0;
+        }
+        // 🛑 4. VORTEX PRO
+        else if (gameName.includes("vortex")) {
+            if (rnd < 65) multiplier = 0;           // 65% Loss
+            else if (rnd < 85) multiplier = 1.2;
+            else if (rnd < 96) multiplier = 1.5;
+            else multiplier = 2.0;
+        }
+        // 🛑 5. INTERACTIVE GAMES (Mines, Hi-Lo, Chicken Road) - Target Limits
+        else if (gameName.includes("mine") || gameName.includes("hi-lo") || gameName.includes("chicken") || gameName.includes("road")) {
+            if (rnd < 50) multiplier = 0;        // 50% chance: Crash on 1st/2nd step
+            else if (rnd < 75) multiplier = 1.5; // 25% chance: Lock at 1.5x max
+            else if (rnd < 92) multiplier = 2.5; // 17% chance: Lock at 2.5x max
+            else multiplier = 5.0;               // 8% chance: Let them go far
+        }
+        else {
+            // FALLBACK SAFETY: Agar game name detect na ho, toh default LOSS ya low win
+            multiplier = (rnd < 30) ? 1.2 : 0; 
+        }
 
-    let winAmount = Math.floor(betAmount * multiplier);
+        // EXACT WIN AMOUNT CALCULATION
+        let winAmount = Math.floor(betAmount * multiplier);
 
-    res.json({
-        success: true,
-        multiplier: multiplier,
-        winAmount: winAmount
-    });
+        res.json({
+            success: true,
+            multiplier: multiplier,
+            winAmount: winAmount
+        });
+    } catch (error) {
+        console.error(error);
+        res.json({ success: false, error: "Brain Fault", multiplier: 0, winAmount: 0 });
+    }
 });
 
 const PORT = process.env.PORT || 3000;
