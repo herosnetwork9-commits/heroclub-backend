@@ -5,71 +5,145 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// 📊 GLOBAL BRAIN MEMORY (Website ka 100% Financial Control)
+// Note: Initial "Seed" pool rakha hai taaki pehle player ko hamesha loss na ho
+let globalStats = {
+    totalBetsReceived: 10000, 
+    totalPayoutsGiven: 5000,
+    houseProfit: 5000,
+    totalGamesPlayed: 0
+};
+
 app.get('/', (req, res) => {
-    res.send("HeroClub Master AI Brain is Live! 🚀💰");
+    res.send(`HeroClub Master AI Brain is Live! 🚀💰 | Lifetime House Profit: ${globalStats.houseProfit} Coins`);
 });
 
+// 🎮 API 1: GAME PLAY LOGIC (Decides Win/Loss & Crash Points)
 app.post('/api/play', (req, res) => {
     try {
         const { uid, game, betAmount } = req.body;
-        
-        let multiplier = 0;
-        let rnd = Math.random() * 100;
-        
-        // Game ka naam properly read karna (chhoti ABCD mein)
         let gameName = game ? game.toLowerCase() : "";
+        
+        // 1. Brain ne paise receive kiye
+        globalStats.totalBetsReceived += betAmount;
+        globalStats.totalGamesPlayed += 1;
 
-        // 🛑 1. STRICT 1.8X PAYOUT GAMES (Dice, Color, Toss, Flip, Cups)
-        if (gameName.includes("dice") || gameName.includes("color") || gameName.includes("toss") || gameName.includes("flip") || gameName.includes("cup")) {
-            let winChance = (betAmount >= 500) ? 20 : 40; // Whales ko sirf 20% win chance, normals ko 40%
-            multiplier = (rnd < winChance) ? 1.8 : 0; 
+        let crashPoint = 0; 
+        let exactWinAmount = 0; 
+
+        // 🧠 THE 10-4-1 LOGIC (House Edge Protection)
+        // Agar casino nuksan mein ja raha hai, toh strictly sabko harao!
+        let isHouseSafe = (globalStats.totalBetsReceived - globalStats.totalPayoutsGiven) > (betAmount * 3);
+        
+        let rnd = Math.random() * 100;
+
+        // ==========================================
+        // 🛑 CATEGORY 1: EXACT 1.8X GAMES (50/50 Style)
+        // ==========================================
+        if (gameName.includes("dice") || gameName.includes("toss") || gameName.includes("color") || gameName.includes("cup") || gameName.includes("flip")) {
+            // Safe = 40% Win, Unsafe = 10% Win, Whale (>500 bet) = 20% Win
+            let winChance = isHouseSafe ? (betAmount >= 500 ? 20 : 40) : 10; 
+
+            if (rnd < winChance) {
+                exactWinAmount = Math.floor(betAmount * 1.8); // FIXED 1.8x
+                crashPoint = 1.8;
+            } else {
+                exactWinAmount = 0;
+                crashPoint = 0;
+            }
         } 
-        // 🛑 2. VIP SLOTS / MEGA SLOTS
-        else if (gameName.includes("slot")) {
-            if (rnd < 70) multiplier = 0;           // 70% Loss
-            else if (rnd < 90) multiplier = 1.2;    // 20% Small Win
-            else if (rnd < 97) multiplier = 2.5;    // 7% Medium Win
-            else if (rnd < 99.5) multiplier = 5.0;  // 2.5% Big Win
-            else multiplier = 20.0;                 // 0.5% Jackpot
+        
+        // ==========================================
+        // 🎰 CATEGORY 2: SLOTS & SPIN GAMES
+        // ==========================================
+        else if (gameName.includes("slot")) { // Mega Slots / VIP Slots
+            if (!isHouseSafe) {
+                exactWinAmount = 0; // House risk mein hai, seedha loss
+            } else {
+                if (rnd < 65) exactWinAmount = 0;                                 // 65% Loss
+                else if (rnd < 85) exactWinAmount = Math.floor(betAmount * 1.2);  // 20% Small Win
+                else if (rnd < 95) exactWinAmount = Math.floor(betAmount * 2.5);  // 10% Medium Win
+                else if (rnd < 99) exactWinAmount = Math.floor(betAmount * 5.0);  // 4% Big Win
+                else exactWinAmount = Math.floor(betAmount * 20.0);               // 1% Jackpot
+            }
+            crashPoint = exactWinAmount > 0 ? (exactWinAmount/betAmount) : 0;
         }
-        // 🛑 3. PLINKO PRO
-        else if (gameName.includes("plinko")) {
-            if (rnd < 45) multiplier = 0;
-            else if (rnd < 80) multiplier = 1.2;
-            else if (rnd < 93) multiplier = 1.4;
-            else if (rnd < 98) multiplier = 1.6;
-            else multiplier = 2.0;
+        else if (gameName.includes("plinko")) { // Plinko Drop
+            if (!isHouseSafe) {
+                exactWinAmount = 0;
+            } else {
+                if (rnd < 50) exactWinAmount = 0;
+                else if (rnd < 80) exactWinAmount = Math.floor(betAmount * 1.2);
+                else if (rnd < 92) exactWinAmount = Math.floor(betAmount * 1.5);
+                else if (rnd < 98) exactWinAmount = Math.floor(betAmount * 2.0);
+                else exactWinAmount = Math.floor(betAmount * 3.0);
+            }
+            crashPoint = exactWinAmount > 0 ? (exactWinAmount/betAmount) : 0;
         }
-        // 🛑 4. VORTEX PRO
-        else if (gameName.includes("vortex")) {
-            if (rnd < 65) multiplier = 0;           // 65% Loss
-            else if (rnd < 85) multiplier = 1.2;
-            else if (rnd < 96) multiplier = 1.5;
-            else multiplier = 2.0;
+        else if (gameName.includes("vortex")) { // Vortex Wheel
+            if (!isHouseSafe) {
+                exactWinAmount = 0;
+            } else {
+                if (rnd < 60) exactWinAmount = 0;
+                else if (rnd < 80) exactWinAmount = Math.floor(betAmount * 1.2);
+                else if (rnd < 95) exactWinAmount = Math.floor(betAmount * 1.5);
+                else exactWinAmount = Math.floor(betAmount * 3.0);
+            }
+            crashPoint = exactWinAmount > 0 ? (exactWinAmount/betAmount) : 0;
         }
-        // 🛑 5. INTERACTIVE GAMES (Mines, Hi-Lo, Chicken Road) - Target Limits
+
+        // ==========================================
+        // 💣 CATEGORY 3: INTERACTIVE GAMES (Mines, Hi-Lo, Chicken Road)
+        // ==========================================
         else if (gameName.includes("mine") || gameName.includes("hi-lo") || gameName.includes("chicken") || gameName.includes("road")) {
-            if (rnd < 50) multiplier = 0;        // 50% chance: Crash on 1st/2nd step
-            else if (rnd < 75) multiplier = 1.5; // 25% chance: Lock at 1.5x max
-            else if (rnd < 92) multiplier = 2.5; // 17% chance: Lock at 2.5x max
-            else multiplier = 5.0;               // 8% chance: Let them go far
+            // Yahan hum exactly paise nahi dete, bas bataate hain "Kahan jaake fategi"
+            if (!isHouseSafe) {
+                crashPoint = (rnd < 70) ? 0 : 1.2; // 70% chance ki pehle click pe hi udd jaye
+            } else {
+                if (rnd < 50) crashPoint = 0;                  // 50% chance pehle step pe blast
+                else if (rnd < 75) crashPoint = 1.5;           // 25% chance ki 1.5x tak safe
+                else if (rnd < 92) crashPoint = 2.5;           // 17% chance ki 2.5x tak safe
+                else crashPoint = 5.0;                         // 8% chance ki 5x tak safe
+            }
+            exactWinAmount = 0; // Frontend cashout hit karega tab update hoga
         }
         else {
-            // FALLBACK SAFETY: Agar game name detect na ho, toh default LOSS ya low win
-            multiplier = (rnd < 30) ? 1.2 : 0; 
+            // Fallback Unknown Games
+            exactWinAmount = 0;
+            crashPoint = 0;
         }
 
-        // EXACT WIN AMOUNT CALCULATION
-        let winAmount = Math.floor(betAmount * multiplier);
+        // 2. Sirf Fixed games ka payout abhi record kar lo
+        if (exactWinAmount > 0) {
+            globalStats.totalPayoutsGiven += exactWinAmount;
+        }
+        globalStats.houseProfit = globalStats.totalBetsReceived - globalStats.totalPayoutsGiven;
 
         res.json({
             success: true,
-            multiplier: multiplier,
-            winAmount: winAmount
+            crashPoint: crashPoint,     
+            winAmount: exactWinAmount   
         });
+
     } catch (error) {
-        console.error(error);
-        res.json({ success: false, error: "Brain Fault", multiplier: 0, winAmount: 0 });
+        res.json({ success: false, error: "Brain Fault", crashPoint: 0, winAmount: 0 });
+    }
+});
+
+// 💸 API 2: CASHOUT REPORTER (Only for Mines, Chicken Road, etc.)
+// Jab user actually 'Cashout' dabata hai, frontend ye API call karega taaki Global Brain ko hisaab pata chale!
+app.post('/api/cashout', (req, res) => {
+    try {
+        const { uid, game, cashoutAmount } = req.body;
+        
+        if (cashoutAmount && cashoutAmount > 0) {
+            globalStats.totalPayoutsGiven += cashoutAmount;
+            globalStats.houseProfit = globalStats.totalBetsReceived - globalStats.totalPayoutsGiven;
+        }
+
+        res.json({ success: true, houseProfit: globalStats.houseProfit });
+    } catch (error) {
+        res.json({ success: false });
     }
 });
 
