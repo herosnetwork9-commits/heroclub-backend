@@ -5,209 +5,208 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 📊 GLOBAL POOL & CASINO MATH
-let globalStats = {
-    totalBetsReceived: 100000, 
-    totalPayoutsGiven: 50000,  
-    houseProfit: 50000,        
+// ========================================================================
+// 🏦 THE GLOBAL CASINO VAULT (LIQUIDITY POOL)
+// ========================================================================
+let globalVault = {
+    totalBetsIn: 0,          // Duniya bhar ke users ne total kitna lagaya
+    totalPayoutsOut: 0,      // Duniya bhar ke users ne total kitna jeeta
+    houseReserve: 0,         // TERA PROFIT (15% of every bet locked here forever)
+    activeLiquidity: 0,      // Game batne ke liye bacha hua paisa (Haarne walo ka paisa)
     totalGamesPlayed: 0
 };
 
-// Target Profit. Iske upar jo bhi profit hoga, wo 'Extra Profit Pool' mein jayega free users ko baantne ke liye.
-const DESIRED_BASE_PROFIT = 20000; 
+// ⚙️ CASINO SETTINGS
+const HOUSE_EDGE_PERCENT = 0.15; // 15% guaranteed profit for the owner
+const MAX_PAYOUT_FROM_POOL = 0.40; // Kisi ek jeetne wale ko pool ka max 40% hi milega, taki pool khali na ho
 
-let userStats = {}; 
-const WITHDRAWAL_LIMIT = 3000;
+// 👥 USER PROFILES (Database Simulation)
+let usersDB = {}; 
 
-app.get('/', (req, res) => {
-    let extraProfit = Math.max(0, globalStats.houseProfit - DESIRED_BASE_PROFIT);
-    res.send(`HeroClub Ultimate Brain Live! 🚀 | House Profit: ${globalStats.houseProfit} | Extra Pool: ${extraProfit}`);
+app.get('/api/admin/stats', (req, res) => {
+    res.json({
+        status: "Brain is Active 🧠",
+        vault: globalVault,
+        activeUsers: Object.keys(usersDB).length
+    });
 });
 
+// ========================================================================
+// 🕹️ THE MASTER PLAY ENDPOINT (Controls ALL Games)
+// ========================================================================
 app.post('/api/play', (req, res) => {
     try {
         const { uid, game, betAmount, isDepositor, currentBalance } = req.body; 
         
-        let depositorStatus = isDepositor || false; 
-        let userBalance = parseFloat(currentBalance) || 0; 
-        let gameName = game ? game.toLowerCase() : "";
         let bet = parseFloat(betAmount) || 0;
+        let gameName = game ? game.toLowerCase() : "unknown";
+        if (bet < 10) return res.json({ success: false, error: "Minimum bet is 10 Coins" });
 
-        if (bet <= 0) return res.json({ success: false, error: "Invalid Bet" });
-
-        // Initialize User if new
-        if (!userStats[uid]) {
-            userStats[uid] = { spins: 0, totalBet: 0, totalWon: 0, lifetimeDeposit: 0 };
+        // 1. INITIALIZE / UPDATE USER PROFILE
+        if (!usersDB[uid]) {
+            usersDB[uid] = { 
+                totalBet: 0, totalWon: 0, 
+                currentLossStreak: 0, currentWinStreak: 0,
+                isVIP: isDepositor || false
+            };
         }
+
+        let user = usersDB[uid];
+        user.totalBet += bet;
+        let userNetProfit = user.totalWon - user.totalBet; // Negative means user is in Loss (Good for us)
+
+        // 2. VAULT ACCOUNTING (Paisa Aaya)
+        globalVault.totalBetsIn += bet;
+        globalVault.totalGamesPlayed += 1;
         
-        if(depositorStatus && userStats[uid].lifetimeDeposit === 0) {
-            userStats[uid].lifetimeDeposit = userBalance; 
-        }
-
-        userStats[uid].spins += 1;
-        userStats[uid].totalBet += bet;
+        // Take House Edge (Tera Profit) FIRST!
+        let houseCut = bet * HOUSE_EDGE_PERCENT;
+        globalVault.houseReserve += houseCut;
         
-        // P&L Logic: Positive means user is in LOSS (Casino is winning)
-        // Negative means user is in PROFIT (User is winning)
-        let userNetLoss = userStats[uid].totalBet - userStats[uid].totalWon;
+        // Put the rest into the active liquidity pool (Jeetne walo ke liye)
+        globalVault.activeLiquidity += (bet - houseCut);
 
-        globalStats.totalBetsReceived += bet;
-        globalStats.totalGamesPlayed += 1;
-        globalStats.houseProfit = globalStats.totalBetsReceived - globalStats.totalPayoutsGiven;
-
-        let extraProfitPool = Math.max(0, globalStats.houseProfit - DESIRED_BASE_PROFIT);
-        let isBankrupt = globalStats.houseProfit < (bet * 5); 
-
-        let rnd = Math.random() * 1000000; 
-        let multiplier = 0;
-        let crashPoint = 0;
-
-        // ========================================================
-        // 🛑 THE MASTERMIND LOGIC (Bet-Size & Loop Trap) 🛑
-        // ========================================================
-        
-        let forceLoss = false;
+        // 3. THE DECISION ENGINE 🧠 (Win or Lose?)
         let forceWin = false;
-        let allowHighFlight = false; // For teasing up to 5x-7x
+        let forceLoss = false;
+        let targetMultiplier = 0;
 
-        if (depositorStatus) {
-            // 💎 VIP (Depositor) Mode: "Slow Bleed"
-            let maxAllowedWin = userNetLoss * 0.75; 
-            
-            if (userNetLoss < 0) {
-                forceLoss = true;
-            } else if (bet * 2 <= maxAllowedWin) {
-                if (rnd < 400000) forceWin = true; 
-            }
-            
-        } else {
-            // 🆓 FREE USER Mode: "The Size Trap & Cross-Game Tracking"
-            if (userBalance > WITHDRAWAL_LIMIT * 0.8) {
-                if (extraProfitPool > WITHDRAWAL_LIMIT && rnd < 100000) forceWin = true;
-                else forceLoss = true; 
+        // --- PSYCHOLOGICAL CHECKS ---
+        
+        // Check A: Protect the Bank! 
+        // Agar bank mein paisa nahi hai, sabko harao.
+        if (globalVault.activeLiquidity < (bet * 2)) {
+            forceLoss = true;
+        } 
+        
+        // Check B: The Pity System (Keep them hooked)
+        // Agar user 2-3 baar se lagatar haar raha hai, aur Bank mein paisa hai, toh usko jeeta do.
+        else if (user.currentLossStreak >= 2) {
+            let maxAffordableWin = globalVault.activeLiquidity * MAX_PAYOUT_FROM_POOL;
+            if (maxAffordableWin > (bet * 1.5)) { 
+                forceWin = true; // Bank allow kar raha hai, isko khush kar do!
             } else {
-                // 🔥 NEW: BET-SIZE BASED LOGIC (The Loop Trap) 🔥
-                if (bet <= 30) {
-                    // 🤏 SMALL BET: Tease them! Give them confidence.
-                    if (rnd < 300000) { 
-                        allowHighFlight = true; // 30% chance to reach 4x - 7.5x
-                    } else if (rnd < 700000) {
-                        forceWin = true; // 40% chance to reach 2x - 3.5x
-                    }
+                forceLoss = true; // Bank mein paisa nahi hai isko khush karne ke liye
+            }
+        }
+        
+        // Check C: The Whale / Abuser Check
+        // Agar user ka net profit bahut zyada ho gaya hai, usko harao.
+        else if (userNetProfit > (bet * 20)) {
+            forceLoss = true;
+        }
+        
+        // Normal Gameplay (Probability based on Liquidity)
+        else {
+            let rnd = Math.random();
+            // Free user win chance: 35%. VIP win chance: 45%.
+            let winChance = user.isVIP ? 0.45 : 0.35; 
+            
+            if (rnd < winChance) forceWin = true;
+            else forceLoss = true;
+        }
+
+        // 4. GAME SPECIFIC MULTIPLIER GENERATION
+        if (gameName.includes("crash") || gameName.includes("chicken") || gameName.includes("road")) {
+            // Interactive Games (Crash Point Generation)
+            if (forceLoss) {
+                // Harao, par illusion maintain karo (1.01x - 1.25x)
+                targetMultiplier = 1.01 + (Math.random() * 0.24);
+                user.currentLossStreak += 1;
+                user.currentWinStreak = 0;
+            } else {
+                // Jeetao (Calculate based on how much bank can afford)
+                let maxAffordableMultiplier = (globalVault.activeLiquidity * MAX_PAYOUT_FROM_POOL) / bet;
+                
+                if (maxAffordableMultiplier < 1.5) {
+                    // Fallback if math fails
+                    targetMultiplier = 1.05 + Math.random() * 0.2; 
+                    user.currentLossStreak += 1;
                 } else {
-                    // 💰 BIG BET: Trap them!
-                    if (userNetLoss < 0) {
-                        // User made profit from small bets, now betting big? SMASH HIM!
-                        forceLoss = true;
-                    } else {
-                        // Normal big bet, high chance of early crash
-                        if (rnd < 750000) forceLoss = true; // 75% chance to kill early
-                    }
+                    // Give them a good flight between 1.5x and the max the bank can afford (Capped at 10x for normal wins)
+                    let safeMax = Math.min(10.0, maxAffordableMultiplier);
+                    targetMultiplier = 1.5 + (Math.random() * (safeMax - 1.5));
+                    
+                    // Note: We don't reset streaks here because in Crash, they might cash out early or greed out and die.
+                    // Streak logic for crash is handled in /api/cashout
                 }
             }
-        }
-
-        // ========================================================
-        // 🎰 CATEGORY B: SPIN GAMES (Slots, Plinko, Vortex)
-        // ========================================================
-        if (gameName.includes("vortex") || gameName.includes("slot") || gameName.includes("plinko")) {
-            if (isBankrupt || forceLoss) {
-                multiplier = (Math.random() < 0.8) ? 0 : 1.2; 
-            } else if (allowHighFlight) {
-                multiplier = 5.0; // Small bet tease in slots
-            } else if (forceWin) {
-                multiplier = (Math.random() < 0.5) ? 2.0 : 2.5; 
-            } else {
-                if (rnd < 600000) multiplier = 0; 
-                else if (rnd < 850000) multiplier = 1.2; 
-                else if (rnd < 970000) multiplier = 2.0; 
-                else multiplier = 2.5;
-            }
-        }
-        // ========================================================
-        // 🎲 CATEGORY A: FIXED ODDS (Color, Dice, Flip)
-        // ========================================================
-        else if (gameName.includes("dice") || gameName.includes("toss") || gameName.includes("color") || gameName.includes("cup") || gameName.includes("flip")) {
-            if (isBankrupt || forceLoss) {
-                multiplier = 0;
-            } else if (forceWin || allowHighFlight) {
-                multiplier = 1.8; // Fixed odds max is usually 1.8x - 2.0x
-            } else {
-                let winChance = 42; 
-                multiplier = (rnd < (winChance * 10000)) ? 1.8 : 0;
-            }
-        }
-        // ========================================================
-        // 💣 CATEGORY C: INTERACTIVE CRASH (Crash, Chicken)
-        // ========================================================
-        else if (gameName.includes("crash") || gameName.includes("chicken") || gameName.includes("road") || gameName.includes("mine")) {
-            if (isBankrupt || forceLoss) {
-                // To hide the rig, don't always do 0x. Crash early at 1.01x to 1.15x.
-                crashPoint = (Math.random() < 0.3) ? 0 : (1.01 + Math.random() * 0.14); 
-                multiplier = crashPoint; 
-            } else if (allowHighFlight) {
-                // 🔥 THE SMALL BET TEASE FLIGHT (Let them see 4x to 7.5x) 🔥
-                crashPoint = 4.0 + Math.random() * 3.5; 
-                multiplier = crashPoint;
-            } else if (forceWin) {
-                crashPoint = 2.0 + Math.random() * 1.5; // Safe 2.0x to 3.5x
-                multiplier = crashPoint;
-            } else {
-                // Normal Distribution (If not trapped)
-                if (rnd < 600000) crashPoint = 0;                  
-                else if (rnd < 850000) crashPoint = 1.2 + Math.random() * 0.5;   
-                else if (rnd < 970000) crashPoint = 1.8 + Math.random() * 1.5;   
-                else crashPoint = 2.0 + Math.random() * 1.0; 
-                
-                multiplier = crashPoint;
-            }
         } 
-
-        // ========================================================
-        // 💰 INSTANT PAYOUT LOGIC (Only for non-interactive games)
-        // ========================================================
-        let winAmount = 0;
-        
-        // Interactive games (Crash, Chicken, Mines) handle cashout in a separate API call.
-        if (multiplier > 0 && !gameName.includes("mine") && !gameName.includes("hi-lo") && !gameName.includes("chicken") && !gameName.includes("road") && !gameName.includes("crash")) {
-            winAmount = Math.floor(bet * multiplier);
-            globalStats.totalPayoutsGiven += winAmount;
-            userStats[uid].totalWon += winAmount;
+        else {
+            // Fixed Odds Games (Color, Dice, Flip - Instant Result)
+            if (forceLoss) {
+                targetMultiplier = 0;
+                user.currentLossStreak += 1;
+                user.currentWinStreak = 0;
+            } else {
+                targetMultiplier = 1.8 + (Math.random() * 0.2); // Typical payout is 1.8x to 2x
+                
+                // Payout Instantly for Fixed Games
+                let winAmount = Math.floor(bet * targetMultiplier);
+                globalVault.activeLiquidity -= winAmount; // Paise pool se kate
+                globalVault.totalPayoutsOut += winAmount;
+                user.totalWon += winAmount;
+                
+                user.currentWinStreak += 1;
+                user.currentLossStreak = 0;
+            }
         }
-
-        globalStats.houseProfit = globalStats.totalBetsReceived - globalStats.totalPayoutsGiven;
 
         res.json({
             success: true,
-            multiplier: multiplier,
-            winAmount: winAmount
+            multiplier: targetMultiplier,
+            liquidityHealth: globalVault.activeLiquidity > 5000 ? "Good" : "Low" // For debugging
         });
 
     } catch (error) {
         console.error(error);
-        res.json({ success: false, error: "Brain Fault", multiplier: 0, winAmount: 0 });
+        res.json({ success: false, error: "Brain Fault", multiplier: 0 });
     }
 });
 
-// ========================================================
-// 💵 CASHOUT API (For Crash, Chicken, Mines)
-// ========================================================
+
+// ========================================================================
+// 💸 THE CASHOUT ENDPOINT (For Crash / Chicken / Mines)
+// ========================================================================
 app.post('/api/cashout', (req, res) => {
     try {
         const { uid, cashoutAmount } = req.body;
         let payout = Math.floor(parseFloat(cashoutAmount)) || 0;
 
-        if (payout > 0) {
-            globalStats.totalPayoutsGiven += payout;
-            globalStats.houseProfit = globalStats.totalBetsReceived - globalStats.totalPayoutsGiven;
-            
-            if(!userStats[uid]) {
-                userStats[uid] = { spins: 0, totalBet: 0, totalWon: 0, lifetimeDeposit: 0 };
-            }
-            userStats[uid].totalWon += payout;
-        }
+        if (!usersDB[uid]) return res.json({ success: false });
 
-        res.json({ success: true, houseProfit: globalStats.houseProfit });
+        let user = usersDB[uid];
+
+        if (payout > 0) {
+            // User successfully cashed out!
+            
+            // Security Check: Does the pool have enough?
+            if (globalVault.activeLiquidity >= payout) {
+                globalVault.activeLiquidity -= payout; // Remove from pool
+                globalVault.totalPayoutsOut += payout;
+                user.totalWon += payout;
+                
+                user.currentWinStreak += 1;
+                user.currentLossStreak = 0;
+                
+                res.json({ success: true, payout: payout });
+            } else {
+                // RARE EMERGENCY: The system messed up and someone won more than the pool has.
+                // We have to pay them from the House Reserve (Tera Profit cut jayega thoda)
+                globalVault.houseReserve -= payout; 
+                globalVault.totalPayoutsOut += payout;
+                user.totalWon += payout;
+                
+                console.log("🚨 WARNING: PAID FROM HOUSE RESERVE!");
+                res.json({ success: true, payout: payout });
+            }
+        } else {
+            // User crashed/lost
+            user.currentLossStreak += 1;
+            user.currentWinStreak = 0;
+            res.json({ success: true, payout: 0 });
+        }
+        
     } catch (error) {
         res.json({ success: false });
     }
@@ -216,4 +215,5 @@ app.post('/api/cashout', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    console.log(`Initial House Edge set to: ${HOUSE_EDGE_PERCENT * 100}%`);
 });
