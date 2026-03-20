@@ -13,7 +13,7 @@ let globalVault = {
     totalBetsIn: 0,          
     totalPayoutsOut: 0,      
     houseReserve: 0,         // Tera pakka Profit (15%)
-    activeLiquidity: 20000,  // 🔥 FIX: 20k Buffer to stop instant-crushing on server reboot
+    activeLiquidity: 20000,  // 20k Buffer to stabilize start
     totalGamesPlayed: 0
 };
 
@@ -24,7 +24,7 @@ const WITHDRAWAL_LIMIT = 3000; // 30 INR
 let usersDB = {}; 
 
 app.get('/', (req, res) => {
-    res.send(`HeroClub Master Brain Active 🧠 | House Reserve: ${globalVault.houseReserve} Coins | Liquidity: ${globalVault.activeLiquidity}`);
+    res.send(`HeroClub Master Brain Active 🧠 | House Profit: ${globalVault.houseReserve} | User Liquidity Pool: ${globalVault.activeLiquidity}`);
 });
 
 app.get('/api/admin/stats', (req, res) => {
@@ -36,19 +36,18 @@ app.get('/api/admin/stats', (req, res) => {
 });
 
 // ========================================================================
-// 🕹️ THE MASTER PLAY ENDPOINT (Controls ALL Games)
+// 🕹️ THE MASTER PLAY ENDPOINT (AI DECISION ENGINE)
 // ========================================================================
 app.post('/api/play', (req, res) => {
     try {
         const { uid, game, betAmount, isDepositor, currentBalance } = req.body; 
         
-        // 🔥 FIX: ANTI-NaN SHIELD. Strictly parse numbers to prevent database corruption.
         let bet = Math.floor(parseFloat(betAmount)) || 0;
         let userBalance = Math.floor(parseFloat(currentBalance)) || 0;
         let gameName = game ? game.toLowerCase() : "unknown";
         
         if (bet < 10) return res.json({ success: false, error: "Minimum bet is 10 Coins" });
-        if (bet > userBalance) return res.json({ success: false, error: "Insufficient Balance" }); // Stop double-betting bugs
+        if (bet > userBalance) return res.json({ success: false, error: "Insufficient Balance" });
 
         // 1. INITIALIZE / UPDATE USER PROFILE
         if (!usersDB[uid]) {
@@ -60,114 +59,133 @@ app.post('/api/play', (req, res) => {
         }
 
         let user = usersDB[uid];
-        user.isVIP = isDepositor || user.isVIP; // Update status if they deposited recently
+        if (isDepositor) user.isVIP = true; 
+        
         user.totalBet += bet;
-        let userNetProfit = user.totalWon - user.totalBet; 
+        let userNetProfit = user.totalWon - user.totalBet; // Negative means they are in Loss
 
         // 2. VAULT ACCOUNTING
         globalVault.totalBetsIn += bet;
         globalVault.totalGamesPlayed += 1;
         
+        // Take 15% guaranteed house edge, rest goes to the playable liquidity pool
         let houseCut = bet * HOUSE_EDGE_PERCENT;
         globalVault.houseReserve += houseCut;
         globalVault.activeLiquidity += (bet - houseCut);
 
-        // 3. THE DECISION ENGINE 🧠 (Win or Lose?)
+        // ==========================================
+        // 🧠 3. THE AI DECISION ENGINE
+        // ==========================================
         let forceWin = false;
         let forceLoss = false;
-        let allowHighFlight = false; // The 5x-7x Tease
+        let allowHighFlight = false; 
+        let bigWinMultiplier = 0; // AI calculated specific recovery multiplier
         let targetMultiplier = 0;
+        let isFreeUser = !user.isVIP;
 
-        let rnd = Math.random();
+        let rnd = Math.random(); 
 
-        // --- A. THE STREAK BREAKER (Stop infinite winning) ---
-        if (user.currentWinStreak >= 2) {
-            if (rnd < 0.85) forceLoss = true; // 85% chance to lose after 2 wins
-        }
-        
-        // --- B. PROTECT THE BANK ---
-        if (globalVault.activeLiquidity < (bet * 2) && bet > 100) {
-            forceLoss = true; // Pool is empty, crush big bets.
-        } 
-
-        // --- C. THE WITHDRAWAL GUARD (Trap free users near 3000 limit) ---
-        if (userBalance >= 2500 && userBalance < WITHDRAWAL_LIMIT && !user.isVIP) {
-            if (rnd < 0.80) forceLoss = true; // Slightly lowered to 80% to give them false hope
+        // --- RULE 1: STRICT VAULT PROTECTION (AI Survival) ---
+        // If we don't have enough money to pay out a 2x win, everyone loses.
+        if (globalVault.activeLiquidity < (bet * 2)) {
+            forceLoss = true; 
         }
 
-        // --- D. BET SIZE LOGIC (If not already forced to lose) ---
-        if (!forceLoss) {
+        // --- RULE 2: FREE USER 12% LUCKY ALLOWANCE (Marketing Cost) ---
+        if (!forceLoss && isFreeUser && userBalance >= 2500 && userBalance < WITHDRAWAL_LIMIT) {
+            // Check if house has enough profit buffer to allow a free withdrawal (> 10,000 liquid)
+            if (globalVault.activeLiquidity > 10000 && rnd < 0.12) {
+                // CONGRATS! You are the 12%. Let them win big so they withdraw and spread the word.
+                forceWin = true;
+                allowHighFlight = true; 
+            } else {
+                // The remaining 88% get trapped and crushed
+                if (Math.random() < 0.85) forceLoss = true;
+            }
+        }
+
+        // --- RULE 3: VIP "OWN MONEY BACK" RECOVERY (Addiction Loop) ---
+        // If a VIP has lost a lot (more than 10x their current bet), give them their money back!
+        if (!forceLoss && !isFreeUser && userNetProfit < -(bet * 10)) {
+            // 25% chance to trigger recovery IF vault can afford to give it back
+            if (rnd < 0.25 && globalVault.activeLiquidity > Math.abs(userNetProfit)) {
+                forceWin = true;
+                allowHighFlight = true;
+                
+                // Calculate how much multiplier they need to get back roughly 70-100% of their loss
+                let neededMult = Math.abs(userNetProfit) / bet;
+                bigWinMultiplier = Math.min(neededMult, 15.0); // Cap at 15x max to avoid pool drain
+            }
+        }
+
+        // --- RULE 4: GENERAL GAMEPLAY (Standard 60/40 Split) ---
+        if (!forceWin && !forceLoss && bigWinMultiplier === 0) {
             if (bet <= 300) {
-                // 🤏 SMALL BETS (<= ₹3): Let them play, build addiction
-                if (rnd < 0.55) {
-                    forceLoss = true; // 55% lose
-                } else if (rnd < 0.85) {
-                    forceWin = true; // 30% normal win (2x-3x)
-                } else {
-                    allowHighFlight = true; // 15% high flight (4x-7x)
-                }
+                if (rnd < 0.60) forceLoss = true; // 60% Lose
+                else if (rnd < 0.85) forceWin = true; // 25% Win
+                else allowHighFlight = true; // 15% Tease
             } 
             else if (bet <= 1000) {
-                // 💵 MEDIUM BETS (₹3 - ₹10): Harder to win
-                if (userNetProfit > 0) {
-                    forceLoss = true; // If they are in overall profit, take it back
-                } else {
-                    if (rnd < 0.70) forceLoss = true; // 70% lose
+                if (userNetProfit > 0) forceLoss = true; // Take back if in profit
+                else {
+                    if (rnd < 0.70) forceLoss = true;
                     else forceWin = true; 
                 }
             } 
             else {
-                // 💰 BIG BETS (> ₹10 / 1000+ Coins): Brutal Mode
-                if (user.isVIP && userNetProfit < -(bet * 3)) {
-                    // Pity for big VIP losers so they don't rage quit
-                    if (rnd < 0.40) forceWin = true;
-                    else forceLoss = true;
-                } else {
-                    // Crush free users or profitable VIPs trying to win big
-                    if (rnd < 0.90) forceLoss = true; 
-                    else forceWin = true;
-                }
+                // High rollers
+                if (rnd < 0.80) forceLoss = true; 
+                else forceWin = true;
             }
         }
 
-        // --- E. PITY SYSTEM OVERRIDE ---
-        // Break long loss streaks to keep them engaged
-        if (user.currentLossStreak >= 3 && globalVault.activeLiquidity > (bet * 3) && !forceWin) {
-            forceLoss = false;
-            forceWin = true;
-            allowHighFlight = false;
+        // --- RULE 5: ANTI-STREAK LOGIC ---
+        if (user.currentWinStreak >= 3) forceLoss = true; // Never let them win 4 in a row
+        if (user.currentLossStreak >= 4 && globalVault.activeLiquidity > (bet * 3) && !forceLoss) {
+            forceWin = true; // Pity win after 4 losses
         }
 
-        // 4. GAME SPECIFIC MULTIPLIER GENERATION
+        // ==========================================
+        // 🚀 4. GENERATING THE CRASH MULTIPLIER
+        // ==========================================
         if (gameName.includes("crash") || gameName.includes("chicken") || gameName.includes("road")) {
             
             if (forceLoss) {
-                targetMultiplier = 1.01 + (Math.random() * 0.19); // Crash between 1.01x - 1.20x
-            } else if (allowHighFlight) {
-                targetMultiplier = 4.5 + (Math.random() * 3.0); // 4.5x - 7.5x
-            } else if (forceWin) {
-                targetMultiplier = 1.8 + (Math.random() * 1.7); // 1.8x - 3.5x
-            } else {
-                targetMultiplier = 1.1 + (Math.random() * 0.5); // Fallback safe crash
+                // Brutal Loss
+                targetMultiplier = 1.01 + (Math.random() * 0.19); // 1.01x - 1.20x
+            } 
+            else if (bigWinMultiplier > 0) {
+                // AI VIP Recovery: Give them a multiplier close to what they lost
+                targetMultiplier = bigWinMultiplier * (0.8 + (Math.random() * 0.4)); // +/- 20% of target
+                if(targetMultiplier < 2.0) targetMultiplier = 2.0; 
+            } 
+            else if (allowHighFlight) {
+                // The Free User Tease & Allowances
+                targetMultiplier = 4.5 + (Math.random() * 6.5); // 4.5x - 11.0x
+            } 
+            else if (forceWin) {
+                // Normal Gameplay Win
+                targetMultiplier = 1.5 + (Math.random() * 2.0); // 1.5x - 3.5x
+            } 
+            else {
+                // Safe Fallback
+                targetMultiplier = 1.15 + (Math.random() * 0.35); 
             }
             
         } 
         else {
-            // Fixed Odds Games (Color, Dice, Flip)
+            // Logic for Fixed Odds Games
             if (forceLoss) {
                 targetMultiplier = 0;
                 user.currentLossStreak += 1;
                 user.currentWinStreak = 0;
             } else {
                 targetMultiplier = 1.8 + (Math.random() * 0.2); 
-                
                 let winAmount = Math.floor(bet * targetMultiplier);
                 globalVault.activeLiquidity -= winAmount; 
                 globalVault.totalPayoutsOut += winAmount;
                 user.totalWon += winAmount;
-                
-                user.currentWinStreak += 1;
-                user.currentLossStreak = 0;
+                user.currentWinStreak += 1; user.currentLossStreak = 0;
             }
         }
 
@@ -179,18 +197,17 @@ app.post('/api/play', (req, res) => {
 
     } catch (error) {
         console.error("Play API Error:", error);
-        res.json({ success: false, error: "Brain Fault", multiplier: 1.05 }); // Safe fallback
+        res.json({ success: false, error: "Brain Fault", multiplier: 1.05 }); 
     }
 });
 
 
 // ========================================================================
-// 💸 THE CASHOUT ENDPOINT (For Crash / Chicken / Mines)
+// 💸 THE CASHOUT ENDPOINT (Updates Vault & Streaks for Crash)
 // ========================================================================
 app.post('/api/cashout', (req, res) => {
     try {
         const { uid, cashoutAmount } = req.body;
-        // 🔥 FIX: Strict Number Parsing
         let payout = Math.floor(parseFloat(cashoutAmount)) || 0;
 
         if (!usersDB[uid]) return res.json({ success: false, error: "User not found in session" });
@@ -212,7 +229,7 @@ app.post('/api/cashout', (req, res) => {
             
             res.json({ success: true, payout: payout });
         } else {
-            // Cashout called with 0 (Lost)
+            // User Lost (Payout is 0)
             user.currentLossStreak += 1;
             user.currentWinStreak = 0;
             res.json({ success: true, payout: 0 });
