@@ -7,19 +7,18 @@ app.use(express.json());
 
 // ========================================================================
 // 🏦 THE GLOBAL CASINO VAULT (LIQUIDITY POOL)
-// ₹1 = 100 Coins. 
 // ========================================================================
 let globalVault = {
     totalBetsIn: 0,          
     totalPayoutsOut: 0,      
-    houseReserve: 0,         // Tera pakka Profit (15%)
-    activeLiquidity: 20000,  // 20k Buffer to stabilize start
+    houseReserve: 0,         
+    activeLiquidity: 20000,  
     totalGamesPlayed: 0
 };
 
 // ⚙️ CASINO SETTINGS
 const HOUSE_EDGE_PERCENT = 0.15; 
-const WITHDRAWAL_LIMIT = 3000; // 30 INR
+const WITHDRAWAL_LIMIT = 3000; 
 
 let usersDB = {}; 
 
@@ -62,13 +61,12 @@ app.post('/api/play', (req, res) => {
         if (isDepositor) user.isVIP = true; 
         
         user.totalBet += bet;
-        let userNetProfit = user.totalWon - user.totalBet; // Negative means they are in Loss
+        let userNetProfit = user.totalWon - user.totalBet; 
 
         // 2. VAULT ACCOUNTING
         globalVault.totalBetsIn += bet;
         globalVault.totalGamesPlayed += 1;
         
-        // Take 15% guaranteed house edge, rest goes to the playable liquidity pool
         let houseCut = bet * HOUSE_EDGE_PERCENT;
         globalVault.houseReserve += houseCut;
         globalVault.activeLiquidity += (bet - houseCut);
@@ -79,131 +77,117 @@ app.post('/api/play', (req, res) => {
         let forceWin = false;
         let forceLoss = false;
         let allowHighFlight = false; 
-        let bigWinMultiplier = 0; // AI calculated specific recovery multiplier
+        let bigWinMultiplier = 0; 
         let targetMultiplier = 0;
         let isFreeUser = !user.isVIP;
 
         let rnd = Math.random(); 
 
-        // --- RULE 1: STRICT VAULT PROTECTION (AI Survival) ---
-        // If we don't have enough money to pay out a 2x win, everyone loses.
+        // --- RULE 1: STRICT VAULT PROTECTION ---
         if (globalVault.activeLiquidity < (bet * 2)) {
             forceLoss = true; 
         }
 
-        // --- RULE 2: FREE USER 12% LUCKY ALLOWANCE (Marketing Cost) ---
+        // --- RULE 2: FREE USER 12% LUCKY ALLOWANCE ---
         if (!forceLoss && isFreeUser && userBalance >= 2500 && userBalance < WITHDRAWAL_LIMIT) {
-            // Check if house has enough profit buffer to allow a free withdrawal (> 10,000 liquid)
             if (globalVault.activeLiquidity > 10000 && rnd < 0.12) {
-                // CONGRATS! You are the 12%. Let them win big so they withdraw and spread the word.
                 forceWin = true;
                 allowHighFlight = true; 
             } else {
-                // The remaining 88% get trapped and crushed
                 if (Math.random() < 0.85) forceLoss = true;
             }
         }
 
-        // --- RULE 3: VIP "OWN MONEY BACK" RECOVERY (Addiction Loop) ---
-        // If a VIP has lost a lot (more than 10x their current bet), give them their money back!
+        // --- RULE 3: VIP "OWN MONEY BACK" RECOVERY ---
         if (!forceLoss && !isFreeUser && userNetProfit < -(bet * 10)) {
-            // 25% chance to trigger recovery IF vault can afford to give it back
             if (rnd < 0.25 && globalVault.activeLiquidity > Math.abs(userNetProfit)) {
                 forceWin = true;
                 allowHighFlight = true;
-                
-                // Calculate how much multiplier they need to get back roughly 70-100% of their loss
                 let neededMult = Math.abs(userNetProfit) / bet;
-                bigWinMultiplier = Math.min(neededMult, 15.0); // Cap at 15x max to avoid pool drain
+                bigWinMultiplier = Math.min(neededMult, 15.0); 
             }
         }
 
         // --- RULE 4: GENERAL GAMEPLAY (Standard 60/40 Split) ---
         if (!forceWin && !forceLoss && bigWinMultiplier === 0) {
             if (bet <= 300) {
-                if (rnd < 0.60) forceLoss = true; // 60% Lose
-                else if (rnd < 0.85) forceWin = true; // 25% Win
-                else allowHighFlight = true; // 15% Tease
+                if (rnd < 0.60) forceLoss = true; 
+                else if (rnd < 0.85) forceWin = true; 
+                else allowHighFlight = true; 
             } 
             else if (bet <= 1000) {
-                if (userNetProfit > 0) forceLoss = true; // Take back if in profit
+                if (userNetProfit > 0) forceLoss = true; 
                 else {
                     if (rnd < 0.70) forceLoss = true;
                     else forceWin = true; 
                 }
             } 
             else {
-                // High rollers
                 if (rnd < 0.80) forceLoss = true; 
                 else forceWin = true;
             }
         }
 
         // --- RULE 5: ANTI-STREAK LOGIC ---
-        if (user.currentWinStreak >= 3) forceLoss = true; // Never let them win 4 in a row
+        if (user.currentWinStreak >= 3) forceLoss = true; 
         if (user.currentLossStreak >= 4 && globalVault.activeLiquidity > (bet * 3) && !forceLoss) {
-            forceWin = true; // Pity win after 4 losses
+            forceWin = true; 
         }
 
         // ==========================================
-        // 🚀 4. GENERATING THE CRASH MULTIPLIER
+        // 🚀 4. GENERATING MULTIPLIER & CALCULATING WIN AMOUNT
         // ==========================================
+        let calculatedWinAmount = 0; // 🔥 FIX: Properly initializing winAmount
+
         if (gameName.includes("crash") || gameName.includes("chicken") || gameName.includes("road")) {
-            
-            if (forceLoss) {
-                // Brutal Loss
-                targetMultiplier = 1.01 + (Math.random() * 0.19); // 1.01x - 1.20x
-            } 
+            if (forceLoss) targetMultiplier = 1.01 + (Math.random() * 0.19);
             else if (bigWinMultiplier > 0) {
-                // AI VIP Recovery: Give them a multiplier close to what they lost
-                targetMultiplier = bigWinMultiplier * (0.8 + (Math.random() * 0.4)); // +/- 20% of target
+                targetMultiplier = bigWinMultiplier * (0.8 + (Math.random() * 0.4)); 
                 if(targetMultiplier < 2.0) targetMultiplier = 2.0; 
             } 
-            else if (allowHighFlight) {
-                // The Free User Tease & Allowances
-                targetMultiplier = 4.5 + (Math.random() * 6.5); // 4.5x - 11.0x
-            } 
-            else if (forceWin) {
-                // Normal Gameplay Win
-                targetMultiplier = 1.5 + (Math.random() * 2.0); // 1.5x - 3.5x
-            } 
-            else {
-                // Safe Fallback
-                targetMultiplier = 1.15 + (Math.random() * 0.35); 
-            }
+            else if (allowHighFlight) targetMultiplier = 4.5 + (Math.random() * 6.5); 
+            else if (forceWin) targetMultiplier = 1.5 + (Math.random() * 2.0); 
+            else targetMultiplier = 1.15 + (Math.random() * 0.35); 
             
+            // For Crash, WinAmount is handled during /cashout endpoint
+            calculatedWinAmount = 0; 
         } 
         else {
-            // Logic for Fixed Odds Games
+            // Logic for Fixed Odds Games (Plinko, Cups, Dice)
             if (forceLoss) {
                 targetMultiplier = 0;
                 user.currentLossStreak += 1;
                 user.currentWinStreak = 0;
+                calculatedWinAmount = 0; // Lost
             } else {
                 targetMultiplier = 1.8 + (Math.random() * 0.2); 
-                let winAmount = Math.floor(bet * targetMultiplier);
-                globalVault.activeLiquidity -= winAmount; 
-                globalVault.totalPayoutsOut += winAmount;
-                user.totalWon += winAmount;
-                user.currentWinStreak += 1; user.currentLossStreak = 0;
+                calculatedWinAmount = Math.floor(bet * targetMultiplier); // 🔥 FIX: Calculating correct win
+                
+                globalVault.activeLiquidity -= calculatedWinAmount; 
+                globalVault.totalPayoutsOut += calculatedWinAmount;
+                user.totalWon += calculatedWinAmount;
+                
+                user.currentWinStreak += 1; 
+                user.currentLossStreak = 0;
             }
         }
 
-        // Send accurate Math format back to frontend
+        // Send accurate Math format back to frontend with the MISSING winAmount!
         res.json({
             success: true,
-            multiplier: parseFloat(targetMultiplier.toFixed(2))
+            multiplier: parseFloat(targetMultiplier.toFixed(2)),
+            winAmount: calculatedWinAmount // 🔥 THE FIX THAT SAVES ACCOUNTS
         });
 
     } catch (error) {
         console.error("Play API Error:", error);
-        res.json({ success: false, error: "Brain Fault", multiplier: 1.05 }); 
+        res.json({ success: false, error: "Brain Fault", multiplier: 1.05, winAmount: 0 }); 
     }
 });
 
 
 // ========================================================================
-// 💸 THE CASHOUT ENDPOINT (Updates Vault & Streaks for Crash)
+// 💸 THE CASHOUT ENDPOINT (For Crash Games)
 // ========================================================================
 app.post('/api/cashout', (req, res) => {
     try {
@@ -215,12 +199,8 @@ app.post('/api/cashout', (req, res) => {
         let user = usersDB[uid];
 
         if (payout > 0) {
-            // User Won
-            if (globalVault.activeLiquidity >= payout) {
-                globalVault.activeLiquidity -= payout; 
-            } else {
-                globalVault.houseReserve -= payout; 
-            }
+            if (globalVault.activeLiquidity >= payout) globalVault.activeLiquidity -= payout; 
+            else globalVault.houseReserve -= payout; 
             
             globalVault.totalPayoutsOut += payout;
             user.totalWon += payout;
@@ -229,19 +209,17 @@ app.post('/api/cashout', (req, res) => {
             
             res.json({ success: true, payout: payout });
         } else {
-            // User Lost (Payout is 0)
             user.currentLossStreak += 1;
             user.currentWinStreak = 0;
             res.json({ success: true, payout: 0 });
         }
-        
     } catch (error) {
         console.error("Cashout API Error:", error);
         res.json({ success: false });
     }
 });
 
-// Explicit Lose Endpoint from Frontend
+// Explicit Lose Endpoint
 app.post('/api/lose', (req, res) => {
     try {
         const { uid } = req.body;
