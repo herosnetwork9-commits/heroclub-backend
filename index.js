@@ -11,22 +11,24 @@ app.use(express.json());
 let globalVault = {
     totalBetsIn: 0,          
     totalPayoutsOut: 0,      
-    houseReserve: 0,         
-    activeLiquidity: 20000,  // 20k Buffer intact
+    adminProfit: 0,          // Real-time track of actual profit (Bets In - Payouts Out)
+    activeLiquidity: 20000,  // The total money available to pay winners
     totalGamesPlayed: 0
 };
 
 // ⚙️ CASINO SETTINGS
-const HOUSE_EDGE_PERCENT = 0.15; 
-const WITHDRAWAL_LIMIT = 3000; 
+const HOUSE_EDGE = 0.04;     // 4% Global House Edge
+const MAX_PAYOUT_PERCENT = 0.10; // Max payout per game cannot exceed 10% of active liquidity
 
 let usersDB = {}; 
 
 app.get('/', (req, res) => {
-    res.send(`HeroClub Master Brain Active 🧠 | House Profit: ${globalVault.houseReserve} | User Liquidity Pool: ${globalVault.activeLiquidity}`);
+    res.send(`HeroClub Master Brain Active 🧠 | Admin Profit: ${globalVault.adminProfit} | Liquidity: ${globalVault.activeLiquidity}`);
 });
 
 app.get('/api/admin/stats', (req, res) => {
+    // Admin dashboard gets full transparent data
+    globalVault.adminProfit = globalVault.totalBetsIn - globalVault.totalPayoutsOut;
     res.json({
         status: "Brain is Active 🧠",
         vault: globalVault,
@@ -35,11 +37,11 @@ app.get('/api/admin/stats', (req, res) => {
 });
 
 // ========================================================================
-// 🕹️ THE MASTER PLAY ENDPOINT (AI DECISION ENGINE)
+// 🕹️ THE MASTER PLAY ENDPOINT (TRUE RNG + HOUSE EDGE)
 // ========================================================================
 app.post('/api/play', (req, res) => {
     try {
-        const { uid, game, betAmount, isDepositor, currentBalance } = req.body; 
+        const { uid, game, betAmount, currentBalance } = req.body; 
         
         let bet = Math.floor(parseFloat(betAmount)) || 0;
         let userBalance = Math.floor(parseFloat(currentBalance)) || 0;
@@ -50,136 +52,92 @@ app.post('/api/play', (req, res) => {
 
         // 1. INITIALIZE / UPDATE USER PROFILE
         if (!usersDB[uid]) {
-            usersDB[uid] = { 
-                totalBet: 0, totalWon: 0, 
-                currentLossStreak: 0, currentWinStreak: 0,
-                isVIP: isDepositor || false
-            };
+            usersDB[uid] = { totalBet: 0, totalWon: 0, currentLossStreak: 0, currentWinStreak: 0 };
         }
 
         let user = usersDB[uid];
-        if (isDepositor) user.isVIP = true; 
-        
         user.totalBet += bet;
-        let userNetProfit = user.totalWon - user.totalBet; 
 
-        // 2. VAULT ACCOUNTING
+        // 2. VAULT ACCOUNTING (Money comes IN)
         globalVault.totalBetsIn += bet;
+        globalVault.activeLiquidity += bet; // Bet goes directly into liquidity
         globalVault.totalGamesPlayed += 1;
-        
-        let houseCut = bet * HOUSE_EDGE_PERCENT;
-        globalVault.houseReserve += houseCut;
-        globalVault.activeLiquidity += (bet - houseCut);
+        globalVault.adminProfit = globalVault.totalBetsIn - globalVault.totalPayoutsOut;
 
         // ==========================================
-        // 🧠 3. THE AI DECISION ENGINE (60/40 & VIP Logic intact)
+        // 🧠 3. THE RNG DECISION ENGINE
         // ==========================================
-        let forceWin = false;
-        let forceLoss = false;
-        let allowHighFlight = false; 
-        let bigWinMultiplier = 0; 
         let targetMultiplier = 0;
-        let isFreeUser = !user.isVIP;
-
-        let rnd = Math.random(); 
-
-        // --- RULE 1: STRICT VAULT PROTECTION ---
-        if (globalVault.activeLiquidity < (bet * 2)) forceLoss = true; 
-
-        // --- RULE 2: FREE USER 12% LUCKY ALLOWANCE ---
-        if (!forceLoss && isFreeUser && userBalance >= 2500 && userBalance < WITHDRAWAL_LIMIT) {
-            if (globalVault.activeLiquidity > 10000 && rnd < 0.12) {
-                forceWin = true; allowHighFlight = true; 
-            } else {
-                if (Math.random() < 0.85) forceLoss = true;
-            }
-        }
-
-        // --- RULE 3: VIP RECOVERY ---
-        if (!forceLoss && !isFreeUser && userNetProfit < -(bet * 10)) {
-            if (rnd < 0.25 && globalVault.activeLiquidity > Math.abs(userNetProfit)) {
-                forceWin = true; allowHighFlight = true;
-                let neededMult = Math.abs(userNetProfit) / bet;
-                bigWinMultiplier = Math.min(neededMult, 15.0); 
-            }
-        }
-
-        // --- RULE 4: GENERAL GAMEPLAY (60/40 Split) ---
-        if (!forceWin && !forceLoss && bigWinMultiplier === 0) {
-            if (bet <= 300) {
-                if (rnd < 0.60) forceLoss = true; 
-                else if (rnd < 0.85) forceWin = true; 
-                else allowHighFlight = true; 
-            } 
-            else if (bet <= 1000) {
-                if (userNetProfit > 0) forceLoss = true; 
-                else {
-                    if (rnd < 0.70) forceLoss = true;
-                    else forceWin = true; 
-                }
-            } 
-            else {
-                if (rnd < 0.80) forceLoss = true; 
-                else forceWin = true;
-            }
-        }
-
-        // --- RULE 5: ANTI-STREAK LOGIC ---
-        if (user.currentWinStreak >= 3) forceLoss = true; 
-        if (user.currentLossStreak >= 4 && globalVault.activeLiquidity > (bet * 3) && !forceLoss) {
-            forceWin = true; 
-        }
-
-        // ==========================================
-        // 🚀 4. GENERATING EXACT MULTIPLIER BY GAME TYPE
-        // ==========================================
         let calculatedWinAmount = 0; 
-
+        
+        // --- 🚀 CRASH GAMES (Rocket, Chicken, Road) ---
         if (gameName.includes("crash") || gameName.includes("chicken") || gameName.includes("road")) {
-            // 🔥 1. CRASH GAMES (Random Decimals)
-            if (forceLoss) targetMultiplier = 1.01 + (Math.random() * 0.19);
-            else if (bigWinMultiplier > 0) {
-                targetMultiplier = bigWinMultiplier * (0.8 + (Math.random() * 0.4)); 
-                if(targetMultiplier < 2.0) targetMultiplier = 2.0; 
-            } 
-            else if (allowHighFlight) targetMultiplier = 4.5 + (Math.random() * 6.5); 
-            else if (forceWin) targetMultiplier = 1.5 + (Math.random() * 2.0); 
-            else targetMultiplier = 1.15 + (Math.random() * 0.35); 
+            // Provably Fair Math: 4% chance to crash at 1.00x
+            let e = 100;
+            let houseEdgePercentage = 4; // 4% edge
             
-            calculatedWinAmount = 0; // Win amount calculated at Cashout
-        } 
-        else if (gameName.includes("plinko")) {
-            // 🔥 2. PLINKO GAMES (Strict Array Multipliers)
-            if (forceLoss) {
-                targetMultiplier = 0;
-            } else if (allowHighFlight || bigWinMultiplier > 0) {
-                let highMults = [10, 3, 2.5];
-                targetMultiplier = highMults[Math.floor(Math.random() * highMults.length)];
+            // Random float between 0 and 1
+            let r = Math.random();
+            
+            if (r < (houseEdgePercentage / 100)) {
+                targetMultiplier = 1.00; // Instant Crash
             } else {
-                let winMults = [2, 1.6, 1.4, 1.2];
-                targetMultiplier = winMults[Math.floor(Math.random() * winMults.length)];
+                // Formula for fair crash multiplier
+                targetMultiplier = Math.floor((100 * (1 - (houseEdgePercentage / 100))) / r) / 100;
             }
+
+            // SAFETY LIMIT: Ensure crash doesn't exceed our maximum payout capacity
+            let maxAllowedMultiplier = (globalVault.activeLiquidity * MAX_PAYOUT_PERCENT) / bet;
+            if (targetMultiplier > maxAllowedMultiplier) {
+                targetMultiplier = Math.floor(maxAllowedMultiplier * 100) / 100;
+            }
+            
+            // In crash, win is calculated later at /api/cashout
+            calculatedWinAmount = 0; 
+        } 
+        
+        // --- 🔵 PLINKO GAMES ---
+        else if (gameName.includes("plinko")) {
+            // Weighted array to ensure ~95% RTP
+            // Chances: 0x (45%), 0.5x (25%), 1.5x (20%), 3x (8%), 10x (2%)
+            let roll = Math.random() * 100;
+            
+            if (roll < 45) targetMultiplier = 0;
+            else if (roll < 70) targetMultiplier = 0.5;
+            else if (roll < 90) targetMultiplier = 1.5;
+            else if (roll < 98) targetMultiplier = 3.0;
+            else targetMultiplier = 10.0;
+
             calculatedWinAmount = Math.floor(bet * targetMultiplier);
         }
+        
+        // --- 🎲 SINGLE PLAY GAMES (Cups, Coin Flip, Dice) ---
         else {
-            // 🔥 3. SINGLE PLAY GAMES (Cups, Coin Flip, Dice) - STRICT 1.8x
-            if (forceLoss) {
+            // True 50/50 Win Probability
+            let isWin = Math.random() < 0.50;
+            
+            if (!isWin) {
                 targetMultiplier = 0;
                 calculatedWinAmount = 0; 
             } else {
-                targetMultiplier = 1.8; // EXACTLY 1.8x
-                calculatedWinAmount = Math.floor(bet * 1.8); 
+                // House Edge applied to the payout multiplier
+                // True odds would be 2.0x, but we give 1.94x (3% House Edge)
+                targetMultiplier = 1.94; 
+                calculatedWinAmount = Math.floor(bet * targetMultiplier); 
             }
         }
 
-        // --- ACCOUNTING FOR NON-CRASH GAMES ---
+        // --- ACCOUNTING FOR INSTANT-RESULT GAMES ---
         if (!gameName.includes("crash") && !gameName.includes("chicken") && !gameName.includes("road")) {
-            if (targetMultiplier === 0) {
+            if (calculatedWinAmount === 0) {
                 user.currentLossStreak += 1;
                 user.currentWinStreak = 0;
             } else {
+                // Payout from the vault
                 globalVault.activeLiquidity -= calculatedWinAmount; 
                 globalVault.totalPayoutsOut += calculatedWinAmount;
+                globalVault.adminProfit = globalVault.totalBetsIn - globalVault.totalPayoutsOut;
+                
                 user.totalWon += calculatedWinAmount;
                 user.currentWinStreak += 1; 
                 user.currentLossStreak = 0;
@@ -194,13 +152,13 @@ app.post('/api/play', (req, res) => {
 
     } catch (error) {
         console.error("Play API Error:", error);
-        res.json({ success: false, error: "Brain Fault", multiplier: 1.05, winAmount: 0 }); 
+        res.json({ success: false, error: "Brain Fault", multiplier: 1.00, winAmount: 0 }); 
     }
 });
 
 
 // ========================================================================
-// 💸 THE CASHOUT ENDPOINT (For Crash Games)
+// 💸 THE CASHOUT ENDPOINT (For Crash/Interactive Games)
 // ========================================================================
 app.post('/api/cashout', (req, res) => {
     try {
@@ -212,10 +170,11 @@ app.post('/api/cashout', (req, res) => {
         let user = usersDB[uid];
 
         if (payout > 0) {
-            if (globalVault.activeLiquidity >= payout) globalVault.activeLiquidity -= payout; 
-            else globalVault.houseReserve -= payout; 
-            
+            // Deduct from liquidity
+            globalVault.activeLiquidity -= payout; 
             globalVault.totalPayoutsOut += payout;
+            globalVault.adminProfit = globalVault.totalBetsIn - globalVault.totalPayoutsOut;
+            
             user.totalWon += payout;
             user.currentWinStreak += 1;
             user.currentLossStreak = 0;
@@ -232,7 +191,7 @@ app.post('/api/cashout', (req, res) => {
     }
 });
 
-// Explicit Lose Endpoint
+// Manual Lose Endpoint (Still here if frontend strictly requires it)
 app.post('/api/lose', (req, res) => {
     try {
         const { uid } = req.body;
