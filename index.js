@@ -1,43 +1,98 @@
 const express = require('express');
 const cors = require('cors');
-const app = express();
+const { initializeApp } = require("firebase/app");
+const { getFirestore, collection, getDocs, query, where } = require("firebase/firestore");
 
+const app = express();
 app.use(cors());
 app.use(express.json());
 
 // ========================================================================
-// 🏦 THE GLOBAL CASINO VAULT (LIQUIDITY POOL)
+// 🔥 FIREBASE CONNECTION (HeroClub Backend)
 // ========================================================================
+const firebaseConfig = {
+    apiKey: "AIzaSyA1hZFTkTZZ0heung_LwreKD4aSaRtc04w",
+    authDomain: "herotube-11076.firebaseapp.com",
+    projectId: "herotube-11076"
+};
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+
+// ========================================================================
+// 🏦 THE GLOBAL CASINO VAULT (LIVE PNL TRACKER)
+// ========================================================================
+const ADMIN_RESERVE = 10000; // 10,000 Coins Minimum Base Profit (Locked!)
+
 let globalVault = {
-    totalBetsIn: 0,          
-    totalPayoutsOut: 0,      
-    adminProfit: 0,          // Real-time track of actual profit (Bets In - Payouts Out)
-    activeLiquidity: 20000,  // The total money available to pay winners
-    totalGamesPlayed: 0
+    totalDepositsCoins: 0,
+    totalWithdrawalsCoins: 0,
+    totalUserLiability: 0,
+    houseProfitCoins: 0,      
+    effectivePNL: 0,          // The main decider: House Profit - Admin Reserve
+    lastSynced: "Never"
 };
 
-// ⚙️ CASINO SETTINGS
-const HOUSE_EDGE = 0.04;     // 4% Global House Edge
-const MAX_PAYOUT_PERCENT = 0.10; // Max payout per game cannot exceed 10% of active liquidity
+let usersDB = {}; // Temporary memory for streaks during live sessions
 
-let usersDB = {}; 
+// ========================================================================
+// 🔄 BACKGROUND PNL CALCULATOR (Runs every 1 Minute)
+// ========================================================================
+async function syncHousePNL() {
+    try {
+        let tDepositsINR = 0, tWithdrawalsINR = 0, tLiabilityCoins = 0;
 
+        // 1. Calculate Liability (Total coins in all active user wallets)
+        const uSnap = await getDocs(collection(db, "users"));
+        uSnap.forEach(doc => {
+            let data = doc.data();
+            if (!data.isBanned && data.coins > 0) tLiabilityCoins += data.coins;
+        });
+
+        // 2. Calculate Real Deposits (Coins + VIP + Referrals)
+        const cSnap = await getDocs(query(collection(db, "coin_purchases"), where("status", "==", "Success")));
+        cSnap.forEach(d => tDepositsINR += parseInt(d.data().amountPaid || d.data().amount || d.data().amountINR || d.data().inr || 0));
+
+        const vSnap = await getDocs(query(collection(db, "vip_purchases"), where("status", "==", "Success")));
+        vSnap.forEach(d => tDepositsINR += parseInt(d.data().amountPaid || d.data().amount || d.data().amountINR || 0));
+
+        const rSnap = await getDocs(query(collection(db, "referral_requests"), where("status", "==", "Success")));
+        rSnap.forEach(d => tDepositsINR += parseInt(d.data().amountPaid || d.data().amount || d.data().amountINR || 0));
+
+        // 3. Calculate Real Withdrawals
+        const wSnap = await getDocs(query(collection(db, "withdrawals"), where("status", "==", "paid")));
+        wSnap.forEach(d => tWithdrawalsINR += parseInt(d.data().amount || 0));
+
+        // 4. Update Vault Stats
+        globalVault.totalDepositsCoins = tDepositsINR * 100;
+        globalVault.totalWithdrawalsCoins = tWithdrawalsINR * 100;
+        globalVault.totalUserLiability = tLiabilityCoins;
+        
+        // PNL FORMULA: Total IN - Total OUT - Liability (Pending to be paid)
+        globalVault.houseProfitCoins = globalVault.totalDepositsCoins - globalVault.totalWithdrawalsCoins - globalVault.totalUserLiability;
+        
+        // EFFECTIVE PNL: This must be positive to give big wins
+        globalVault.effectivePNL = globalVault.houseProfitCoins - ADMIN_RESERVE;
+        globalVault.lastSynced = new Date().toLocaleTimeString();
+
+        console.log(`[SYNCED] Profit: ${globalVault.houseProfitCoins} C | Effective PNL: ${globalVault.effectivePNL} C`);
+    } catch (e) {
+        console.error("Failed to sync PNL from Firebase:", e.message);
+    }
+}
+
+// Start auto-sync loop (Run immediately, then every 60 seconds)
+syncHousePNL();
+setInterval(syncHousePNL, 60000);
+
+// ========================================================================
+// 📡 SERVER ROUTES
+// ========================================================================
 app.get('/', (req, res) => {
-    res.send(`HeroClub Master Brain Active 🧠 | Admin Profit: ${globalVault.adminProfit} | Liquidity: ${globalVault.activeLiquidity}`);
-});
-
-app.get('/api/admin/stats', (req, res) => {
-    // Admin dashboard gets full transparent data
-    globalVault.adminProfit = globalVault.totalBetsIn - globalVault.totalPayoutsOut;
-    res.json({
-        status: "Brain is Active 🧠",
-        vault: globalVault,
-        activeUsers: Object.keys(usersDB).length
-    });
+    res.send(`HeroClub Master Brain 🧠 | Effective PNL: ${globalVault.effectivePNL} Coins | Sync: ${globalVault.lastSynced}`);
 });
 
 // ========================================================================
-// 🕹️ THE MASTER PLAY ENDPOINT (TRUE RNG + HOUSE EDGE)
+// 🕹️ THE MASTER PLAY ENDPOINT (DYNAMIC RNG + SAFEGUARD MODE)
 // ========================================================================
 app.post('/api/play', (req, res) => {
     try {
@@ -50,98 +105,94 @@ app.post('/api/play', (req, res) => {
         if (bet < 10) return res.json({ success: false, error: "Minimum bet is 10 Coins" });
         if (bet > userBalance) return res.json({ success: false, error: "Insufficient Balance" });
 
-        // 1. INITIALIZE / UPDATE USER PROFILE
-        if (!usersDB[uid]) {
-            usersDB[uid] = { totalBet: 0, totalWon: 0, currentLossStreak: 0, currentWinStreak: 0 };
-        }
-
+        if (!usersDB[uid]) usersDB[uid] = { currentLossStreak: 0, currentWinStreak: 0 };
         let user = usersDB[uid];
-        user.totalBet += bet;
-
-        // 2. VAULT ACCOUNTING (Money comes IN)
-        globalVault.totalBetsIn += bet;
-        globalVault.activeLiquidity += bet; // Bet goes directly into liquidity
-        globalVault.totalGamesPlayed += 1;
-        globalVault.adminProfit = globalVault.totalBetsIn - globalVault.totalPayoutsOut;
 
         // ==========================================
-        // 🧠 3. THE RNG DECISION ENGINE
+        // 🧠 DECISION ENGINE: ARE WE IN DANGER?
         // ==========================================
+        let isSafeguardMode = globalVault.effectivePNL < 0; 
         let targetMultiplier = 0;
         let calculatedWinAmount = 0; 
-        
-        // --- 🚀 CRASH GAMES (Rocket, Chicken, Road) ---
-        if (gameName.includes("crash") || gameName.includes("chicken") || gameName.includes("road")) {
-            // Provably Fair Math: 4% chance to crash at 1.00x
-            let e = 100;
-            let houseEdgePercentage = 4; // 4% edge
-            
-            // Random float between 0 and 1
-            let r = Math.random();
-            
-            if (r < (houseEdgePercentage / 100)) {
-                targetMultiplier = 1.00; // Instant Crash
-            } else {
-                // Formula for fair crash multiplier
-                targetMultiplier = Math.floor((100 * (1 - (houseEdgePercentage / 100))) / r) / 100;
-            }
+        let r = Math.random();
 
-            // SAFETY LIMIT: Ensure crash doesn't exceed our maximum payout capacity
-            let maxAllowedMultiplier = (globalVault.activeLiquidity * MAX_PAYOUT_PERCENT) / bet;
-            if (targetMultiplier > maxAllowedMultiplier) {
-                targetMultiplier = Math.floor(maxAllowedMultiplier * 100) / 100;
+        // --- 🚀 CRASH GAMES ---
+        if (gameName.includes("crash") || gameName.includes("chicken")) {
+            if (isSafeguardMode) {
+                // 🚨 SAFEGUARD MODE: House is under 10k profit limit.
+                let emergencyHouseEdge = 8; // 8% instant crash
+                if (r < (emergencyHouseEdge / 100)) {
+                    targetMultiplier = 1.00;
+                } else {
+                    targetMultiplier = Math.floor((100 * (1 - (emergencyHouseEdge / 100))) / r) / 100;
+                }
+                
+                // RUTHLESS CAP: Never let them go above 2.50x in safeguard mode
+                if (targetMultiplier > 2.50) {
+                    targetMultiplier = 1.15 + (Math.random() * 1.0); // Fake a small win (1.15x - 2.15x)
+                }
+            } else {
+                // 🟢 NORMAL FAIR MODE (We have extra profit to play with)
+                let normalHouseEdge = 4; // 4% instant crash
+                if (r < (normalHouseEdge / 100)) {
+                    targetMultiplier = 1.00; 
+                } else {
+                    targetMultiplier = Math.floor((100 * (1 - (normalHouseEdge / 100))) / r) / 100;
+                }
+
+                // DYNAMIC CAP: Max payout is 15% of our 'Extra' Profit Pool
+                let maxAllowedMultiplier = (globalVault.effectivePNL * 0.15) / bet;
+                if (targetMultiplier > maxAllowedMultiplier && maxAllowedMultiplier > 1.2) {
+                    targetMultiplier = Math.floor(maxAllowedMultiplier * 100) / 100;
+                }
             }
-            
-            // In crash, win is calculated later at /api/cashout
-            calculatedWinAmount = 0; 
+            calculatedWinAmount = 0; // Calculated on cashout
         } 
         
         // --- 🔵 PLINKO GAMES ---
         else if (gameName.includes("plinko")) {
-            // Weighted array to ensure ~95% RTP
-            // Chances: 0x (45%), 0.5x (25%), 1.5x (20%), 3x (8%), 10x (2%)
             let roll = Math.random() * 100;
             
-            if (roll < 45) targetMultiplier = 0;
-            else if (roll < 70) targetMultiplier = 0.5;
-            else if (roll < 90) targetMultiplier = 1.5;
-            else if (roll < 98) targetMultiplier = 3.0;
-            else targetMultiplier = 10.0;
-
+            if (isSafeguardMode) {
+                // Heavy loss chance, Block 10x
+                if (roll < 60) targetMultiplier = 0;
+                else if (roll < 85) targetMultiplier = 0.5;
+                else targetMultiplier = 1.5;
+            } else {
+                // Normal 95% RTP
+                if (roll < 45) targetMultiplier = 0;
+                else if (roll < 70) targetMultiplier = 0.5;
+                else if (roll < 90) targetMultiplier = 1.5;
+                else if (roll < 98) targetMultiplier = 3.0;
+                else targetMultiplier = 10.0;
+                
+                // Prevent massive plinko drains
+                if (targetMultiplier === 10.0 && (bet * 10) > (globalVault.effectivePNL * 0.15)) {
+                    targetMultiplier = 3.0;
+                }
+            }
             calculatedWinAmount = Math.floor(bet * targetMultiplier);
         }
         
-        // --- 🎲 SINGLE PLAY GAMES (Cups, Coin Flip, Dice) ---
+        // --- 🎲 SINGLE PLAY GAMES (Coin Flip, Dice) ---
         else {
-            // True 50/50 Win Probability
-            let isWin = Math.random() < 0.50;
+            let winChance = isSafeguardMode ? 0.35 : 0.48; // 35% win chance in danger, 48% normal
+            let isWin = Math.random() < winChance;
             
             if (!isWin) {
                 targetMultiplier = 0;
                 calculatedWinAmount = 0; 
             } else {
-                // House Edge applied to the payout multiplier
-                // True odds would be 2.0x, but we give 1.94x (3% House Edge)
-                targetMultiplier = 1.94; 
+                targetMultiplier = 1.94; // 3% House Edge on payout
                 calculatedWinAmount = Math.floor(bet * targetMultiplier); 
             }
         }
 
-        // --- ACCOUNTING FOR INSTANT-RESULT GAMES ---
-        if (!gameName.includes("crash") && !gameName.includes("chicken") && !gameName.includes("road")) {
-            if (calculatedWinAmount === 0) {
-                user.currentLossStreak += 1;
-                user.currentWinStreak = 0;
-            } else {
-                // Payout from the vault
-                globalVault.activeLiquidity -= calculatedWinAmount; 
-                globalVault.totalPayoutsOut += calculatedWinAmount;
-                globalVault.adminProfit = globalVault.totalBetsIn - globalVault.totalPayoutsOut;
-                
-                user.totalWon += calculatedWinAmount;
-                user.currentWinStreak += 1; 
-                user.currentLossStreak = 0;
-            }
+        // We DO NOT adjust vault here anymore. Vault is strictly synced with Firebase.
+        if (calculatedWinAmount === 0) {
+            user.currentLossStreak += 1; user.currentWinStreak = 0;
+        } else {
+            user.currentWinStreak += 1; user.currentLossStreak = 0;
         }
 
         res.json({
@@ -156,7 +207,6 @@ app.post('/api/play', (req, res) => {
     }
 });
 
-
 // ========================================================================
 // 💸 THE CASHOUT ENDPOINT (For Crash/Interactive Games)
 // ========================================================================
@@ -170,15 +220,8 @@ app.post('/api/cashout', (req, res) => {
         let user = usersDB[uid];
 
         if (payout > 0) {
-            // Deduct from liquidity
-            globalVault.activeLiquidity -= payout; 
-            globalVault.totalPayoutsOut += payout;
-            globalVault.adminProfit = globalVault.totalBetsIn - globalVault.totalPayoutsOut;
-            
-            user.totalWon += payout;
             user.currentWinStreak += 1;
             user.currentLossStreak = 0;
-            
             res.json({ success: true, payout: payout });
         } else {
             user.currentLossStreak += 1;
@@ -191,7 +234,6 @@ app.post('/api/cashout', (req, res) => {
     }
 });
 
-// Manual Lose Endpoint (Still here if frontend strictly requires it)
 app.post('/api/lose', (req, res) => {
     try {
         const { uid } = req.body;
@@ -205,5 +247,5 @@ app.post('/api/lose', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`HeroClub Master Brain running on port ${PORT}`);
 });
