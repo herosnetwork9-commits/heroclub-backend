@@ -4,7 +4,13 @@ const { initializeApp } = require("firebase/app");
 const { getFirestore, collection, getDocs, query, where } = require("firebase/firestore");
 
 const app = express();
-app.use(cors());
+
+// 🔥 CORS FIXED: Har device aur frontend se connect hone ke liye
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type']
+}));
 app.use(express.json());
 
 // ========================================================================
@@ -28,27 +34,27 @@ let globalVault = {
     totalWithdrawalsCoins: 0,
     totalUserLiability: 0,
     houseProfitCoins: 0,      
-    effectivePNL: 0,          // The main decider: House Profit - Admin Reserve
+    effectivePNL: 0,          // House Profit - Admin Reserve
     lastSynced: "Never"
 };
 
-let usersDB = {}; // Temporary memory for streaks during live sessions
+let usersDB = {}; // Session database for tracking streaks
 
 // ========================================================================
-// 🔄 BACKGROUND PNL CALCULATOR (Runs every 1 Minute)
+// 🔄 BACKGROUND PNL CALCULATOR (BILLING SHIELD ENABLED)
 // ========================================================================
 async function syncHousePNL() {
     try {
         let tDepositsINR = 0, tWithdrawalsINR = 0, tLiabilityCoins = 0;
 
-        // 1. Calculate Liability (Total coins in all active user wallets)
+        // 1. Calculate Liability
         const uSnap = await getDocs(collection(db, "users"));
         uSnap.forEach(doc => {
             let data = doc.data();
             if (!data.isBanned && data.coins > 0) tLiabilityCoins += data.coins;
         });
 
-        // 2. Calculate Real Deposits (Coins + VIP + Referrals)
+        // 2. Calculate Real Deposits
         const cSnap = await getDocs(query(collection(db, "coin_purchases"), where("status", "==", "Success")));
         cSnap.forEach(d => tDepositsINR += parseInt(d.data().amountPaid || d.data().amount || d.data().amountINR || d.data().inr || 0));
 
@@ -67,10 +73,7 @@ async function syncHousePNL() {
         globalVault.totalWithdrawalsCoins = tWithdrawalsINR * 100;
         globalVault.totalUserLiability = tLiabilityCoins;
         
-        // PNL FORMULA: Total IN - Total OUT - Liability (Pending to be paid)
         globalVault.houseProfitCoins = globalVault.totalDepositsCoins - globalVault.totalWithdrawalsCoins - globalVault.totalUserLiability;
-        
-        // EFFECTIVE PNL: This must be positive to give big wins
         globalVault.effectivePNL = globalVault.houseProfitCoins - ADMIN_RESERVE;
         globalVault.lastSynced = new Date().toLocaleTimeString();
 
@@ -80,15 +83,15 @@ async function syncHousePNL() {
     }
 }
 
-// Start auto-sync loop (Run immediately, then every 60 seconds)
+// 🔥 Start auto-sync loop (Updated to 5 Minutes to save Firebase Costs)
 syncHousePNL();
-setInterval(syncHousePNL, 60000);
+setInterval(syncHousePNL, 300000); // 300000 ms = 5 Minutes
 
 // ========================================================================
 // 📡 SERVER ROUTES
 // ========================================================================
 app.get('/', (req, res) => {
-    res.send(`HeroClub Master Brain 🧠 | Effective PNL: ${globalVault.effectivePNL} Coins | Sync: ${globalVault.lastSynced}`);
+    res.send(`HeroClub Master Brain 🧠 | Effective PNL: ${globalVault.effectivePNL} Coins | Sync: ${globalVault.lastSynced} | Status: Online ✅`);
 });
 
 // ========================================================================
@@ -98,6 +101,8 @@ app.post('/api/play', (req, res) => {
     try {
         const { uid, game, betAmount, currentBalance } = req.body; 
         
+        if (!uid || !betAmount) return res.json({ success: false, error: "Invalid Request Data" });
+
         let bet = Math.floor(parseFloat(betAmount)) || 0;
         let userBalance = Math.floor(parseFloat(currentBalance)) || 0;
         let gameName = game ? game.toLowerCase() : "unknown";
@@ -108,31 +113,26 @@ app.post('/api/play', (req, res) => {
         if (!usersDB[uid]) usersDB[uid] = { currentLossStreak: 0, currentWinStreak: 0 };
         let user = usersDB[uid];
 
-        // ==========================================
-        // 🧠 DECISION ENGINE: ARE WE IN DANGER?
-        // ==========================================
         let isSafeguardMode = globalVault.effectivePNL < 0; 
         let targetMultiplier = 0;
         let calculatedWinAmount = 0; 
         let r = Math.random();
+        let isCrashGame = false;
 
         // --- 🚀 CRASH GAMES ---
         if (gameName.includes("crash") || gameName.includes("chicken")) {
+            isCrashGame = true;
             if (isSafeguardMode) {
-                // 🚨 SAFEGUARD MODE: House is under 10k profit limit.
                 let emergencyHouseEdge = 8; // 8% instant crash
                 if (r < (emergencyHouseEdge / 100)) {
                     targetMultiplier = 1.00;
                 } else {
                     targetMultiplier = Math.floor((100 * (1 - (emergencyHouseEdge / 100))) / r) / 100;
                 }
-                
-                // RUTHLESS CAP: Never let them go above 2.50x in safeguard mode
                 if (targetMultiplier > 2.50) {
-                    targetMultiplier = 1.15 + (Math.random() * 1.0); // Fake a small win (1.15x - 2.15x)
+                    targetMultiplier = 1.15 + (Math.random() * 1.0);
                 }
             } else {
-                // 🟢 NORMAL FAIR MODE (We have extra profit to play with)
                 let normalHouseEdge = 4; // 4% instant crash
                 if (r < (normalHouseEdge / 100)) {
                     targetMultiplier = 1.00; 
@@ -140,13 +140,12 @@ app.post('/api/play', (req, res) => {
                     targetMultiplier = Math.floor((100 * (1 - (normalHouseEdge / 100))) / r) / 100;
                 }
 
-                // DYNAMIC CAP: Max payout is 15% of our 'Extra' Profit Pool
                 let maxAllowedMultiplier = (globalVault.effectivePNL * 0.15) / bet;
                 if (targetMultiplier > maxAllowedMultiplier && maxAllowedMultiplier > 1.2) {
                     targetMultiplier = Math.floor(maxAllowedMultiplier * 100) / 100;
                 }
             }
-            calculatedWinAmount = 0; // Calculated on cashout
+            calculatedWinAmount = 0; // Calculated strictly on cashout
         } 
         
         // --- 🔵 PLINKO GAMES ---
@@ -154,19 +153,16 @@ app.post('/api/play', (req, res) => {
             let roll = Math.random() * 100;
             
             if (isSafeguardMode) {
-                // Heavy loss chance, Block 10x
                 if (roll < 60) targetMultiplier = 0;
                 else if (roll < 85) targetMultiplier = 0.5;
                 else targetMultiplier = 1.5;
             } else {
-                // Normal 95% RTP
                 if (roll < 45) targetMultiplier = 0;
                 else if (roll < 70) targetMultiplier = 0.5;
                 else if (roll < 90) targetMultiplier = 1.5;
                 else if (roll < 98) targetMultiplier = 3.0;
                 else targetMultiplier = 10.0;
                 
-                // Prevent massive plinko drains
                 if (targetMultiplier === 10.0 && (bet * 10) > (globalVault.effectivePNL * 0.15)) {
                     targetMultiplier = 3.0;
                 }
@@ -174,25 +170,27 @@ app.post('/api/play', (req, res) => {
             calculatedWinAmount = Math.floor(bet * targetMultiplier);
         }
         
-        // --- 🎲 SINGLE PLAY GAMES (Coin Flip, Dice) ---
+        // --- 🎲 SINGLE PLAY GAMES (Lucky Dice, Coin Flip) ---
         else {
-            let winChance = isSafeguardMode ? 0.35 : 0.48; // 35% win chance in danger, 48% normal
+            let winChance = isSafeguardMode ? 0.35 : 0.48; // 35% win chance in safeguard, 48% normal
             let isWin = Math.random() < winChance;
             
             if (!isWin) {
                 targetMultiplier = 0;
                 calculatedWinAmount = 0; 
             } else {
-                targetMultiplier = 1.94; // 3% House Edge on payout
+                targetMultiplier = 1.80; 
                 calculatedWinAmount = Math.floor(bet * targetMultiplier); 
             }
         }
 
-        // We DO NOT adjust vault here anymore. Vault is strictly synced with Firebase.
-        if (calculatedWinAmount === 0) {
-            user.currentLossStreak += 1; user.currentWinStreak = 0;
-        } else {
-            user.currentWinStreak += 1; user.currentLossStreak = 0;
+        // Streak Tracker logic (Only for non-crash games, Crash relies on cashout)
+        if (!isCrashGame) {
+            if (calculatedWinAmount === 0) {
+                user.currentLossStreak += 1; user.currentWinStreak = 0;
+            } else {
+                user.currentWinStreak += 1; user.currentLossStreak = 0;
+            }
         }
 
         res.json({
@@ -213,18 +211,19 @@ app.post('/api/play', (req, res) => {
 app.post('/api/cashout', (req, res) => {
     try {
         const { uid, cashoutAmount } = req.body;
+        if (!uid) return res.json({ success: false, error: "Missing User ID" });
+
         let payout = Math.floor(parseFloat(cashoutAmount)) || 0;
 
-        if (!usersDB[uid]) return res.json({ success: false, error: "User not found in session" });
-
+        if (!usersDB[uid]) usersDB[uid] = { currentLossStreak: 0, currentWinStreak: 0 };
         let user = usersDB[uid];
 
         if (payout > 0) {
-            user.currentWinStreak += 1;
+            user.currentWinStreak += 1; 
             user.currentLossStreak = 0;
             res.json({ success: true, payout: payout });
         } else {
-            user.currentLossStreak += 1;
+            user.currentLossStreak += 1; 
             user.currentWinStreak = 0;
             res.json({ success: true, payout: 0 });
         }
@@ -237,7 +236,7 @@ app.post('/api/cashout', (req, res) => {
 app.post('/api/lose', (req, res) => {
     try {
         const { uid } = req.body;
-        if (usersDB[uid]) {
+        if (uid && usersDB[uid]) {
             usersDB[uid].currentLossStreak += 1;
             usersDB[uid].currentWinStreak = 0;
         }
