@@ -27,7 +27,7 @@ const db = getFirestore(firebaseApp);
 // ========================================================================
 // 🏦 THE GLOBAL CASINO VAULT (LIVE PNL TRACKER)
 // ========================================================================
-const ADMIN_RESERVE = 3000; // 10,000 Coins Minimum Base Profit (Locked!)
+const ADMIN_RESERVE = 2000; // 10,000 Coins Minimum Base Profit (Locked!)
 
 let globalVault = {
     totalDepositsCoins: 0,
