@@ -35,7 +35,7 @@ let globalVault = {
     totalUserLiability: 0,
     houseProfitCoins: 0,      
     effectivePNL: 0,          
-    lastSynced: "Never"
+    lastSynced: "Fetching..."
 };
 
 let usersDB = {}; 
@@ -87,7 +87,7 @@ app.get('/', (req, res) => {
 });
 
 // ========================================================================
-// 🕹️ THE MASTER PLAY ENDPOINT (WHALE PROTECTION + NEW SAFEGUARD)
+// 🕹️ THE MASTER PLAY ENDPOINT (REAL CASINO MATH & DOPAMINE ENGINE)
 // ========================================================================
 app.post('/api/play', (req, res) => {
     try {
@@ -105,13 +105,10 @@ app.post('/api/play', (req, res) => {
         if (!usersDB[uid]) usersDB[uid] = { currentLossStreak: 0, currentWinStreak: 0 };
         let user = usersDB[uid];
 
-        // 🛡️ NEW SAFEGUARD: Activates when PNL drops below 3000 Coins!
-        let isSafeguardMode = globalVault.effectivePNL < 3000; 
-        let isEngagementMode = globalVault.effectivePNL > 20000; 
-        
-        // 🐋 WHALE PROTECTION LIMIT: Max payout cannot exceed 10% of total Vault PNL
+        // 🛡️ DYNAMIC VAULT EXPOSURE (House never goes broke)
+        // Max payout allowed is 10% of our available profit, or minimum 500 coins for new platform
         let maxVaultExposure = Math.max(500, globalVault.effectivePNL * 0.10); 
-        let isWhaleBet = bet > (maxVaultExposure * 0.5); // Identify abnormally large bets
+        let isWhaleBet = bet > (maxVaultExposure * 0.4); // Target users betting too big
         
         let targetMultiplier = 0;
         let calculatedWinAmount = 0; 
@@ -119,44 +116,49 @@ app.post('/api/play', (req, res) => {
         let isCrashGame = false;
 
         // ==========================================================
-        // 🚀 1. CRASH & CHICKEN GAMES
+        // 🚀 1. CRASH & CHICKEN GAMES (Aviator Logic)
         // ==========================================================
         if (gameName.includes("crash") || gameName.includes("chicken")) {
             isCrashGame = true;
-            
-            let dynamicEdge = 0.04; 
-            
-            if (isSafeguardMode) dynamicEdge = 0.08; 
-            else if (isEngagementMode) dynamicEdge = 0.02; 
 
-            if (user.currentLossStreak >= 3 && !isSafeguardMode && !isWhaleBet) {
-                dynamicEdge = 0.01; 
-            }
-
-            // WHALE PENALTY: If user places a huge bet, increase edge drastically to force a loss
             if (isWhaleBet) {
-                dynamicEdge = 0.20; // 20% instant crash chance for massive bets
-            }
-
-            if (r < dynamicEdge) {
-                targetMultiplier = 1.00; 
+                // 🐋 WHALE MODE: If user places a huge bet, we restrict the multiplier
+                // It looks like a normal round, but it crashes before they get too rich
+                if (r < 0.15) targetMultiplier = 1.00; // 15% Instant Crash
+                else if (r < 0.60) targetMultiplier = 1.05 + (Math.random() * 0.45); // 1.05x - 1.50x
+                else if (r < 0.90) targetMultiplier = 1.50 + (Math.random() * 1.50); // 1.50x - 3.00x
+                else targetMultiplier = 3.00 + (Math.random() * 2.00); // Max ~5.00x
             } else {
-                targetMultiplier = Math.floor((100 * (1 - dynamicEdge)) / r) / 100;
-            }
-
-            if (!isSafeguardMode && targetMultiplier > 1.01 && targetMultiplier < 1.15 && !isWhaleBet) {
-                if (Math.random() > 0.4) {
-                    targetMultiplier = 1.25 + (Math.random() * 0.55); 
+                // 🎰 STANDARD CASINO DOPAMINE DISTRIBUTION (For normal bets)
+                if (r < 0.03) {
+                    // 3% Chance: Instant Crash (Punishes 1.01x auto-cashouts)
+                    targetMultiplier = 1.00;
+                } else if (r < 0.48) {
+                    // 45% Chance: Sweet Spot (1.01x - 2.00x) - Keeps them hooked
+                    targetMultiplier = 1.01 + (Math.random() * 0.99);
+                } else if (r < 0.88) {
+                    // 40% Chance: Mid-Range (2.00x - 10.00x) - Good profits, makes game feel fair
+                    targetMultiplier = 2.00 + (Math.random() * 8.00);
+                } else {
+                    // 12% Chance: THE BIG BAIT (10.00x - 22.00x) - The Lust Generator
+                    targetMultiplier = 10.00 + (Math.random() * 12.00);
                 }
             }
 
-            // STRICT MAX CAP: Impossible to bypass Vault Limit
-            let maxAllowedMultiplier = maxVaultExposure / bet;
+            // 🛑 ABSOLUTE MAXIMUM CAP: Never exceed 22.00x
+            if (targetMultiplier > 22.00) targetMultiplier = 22.00;
+
+            // 🛡️ PNL SAFEGUARD (INVISIBLE WALL): 
+            // Ensures even on a lucky run, a user cannot drain the house vault
+            let maxAllowedMultiplier = Math.max(1.05, maxVaultExposure / bet);
             if (targetMultiplier > maxAllowedMultiplier) {
-                targetMultiplier = Math.max(1.00, Math.floor(maxAllowedMultiplier * 100) / 100);
+                // We randomize it slightly below the max allowed so it doesn't look mathematically rigged
+                targetMultiplier = 1.01 + (Math.random() * (maxAllowedMultiplier - 1.01));
             }
 
-            calculatedWinAmount = 0; 
+            // Round to 2 decimal places
+            targetMultiplier = Math.floor(targetMultiplier * 100) / 100;
+            calculatedWinAmount = 0; // Handled at cashout
         } 
         
         // ==========================================================
@@ -165,20 +167,14 @@ app.post('/api/play', (req, res) => {
         else if (gameName.includes("plinko")) {
             let roll = Math.random() * 100;
             
-            if (isSafeguardMode || isWhaleBet) {
-                // Whale or Poor House: Lock high multipliers out
+            if (isWhaleBet) {
+                // Protect vault from whale Plinko bets
                 if (roll < 65) targetMultiplier = 0;
                 else if (roll < 95) targetMultiplier = 0.5;
                 else targetMultiplier = 1.5;
             } 
-            else if (isEngagementMode || user.currentLossStreak >= 3) {
-                if (roll < 30) targetMultiplier = 0;
-                else if (roll < 60) targetMultiplier = 0.5;
-                else if (roll < 85) targetMultiplier = 1.5;
-                else if (roll < 97) targetMultiplier = 3.0;
-                else targetMultiplier = 10.0;
-            } 
             else {
+                // Normal Plinko distribution
                 if (roll < 45) targetMultiplier = 0;
                 else if (roll < 70) targetMultiplier = 0.5;
                 else if (roll < 90) targetMultiplier = 1.5;
@@ -186,7 +182,7 @@ app.post('/api/play', (req, res) => {
                 else targetMultiplier = 10.0;
             }
 
-            // STRICT MAX CAP for Plinko
+            // Strictly enforce max vault exposure for Plinko
             while ((bet * targetMultiplier) > maxVaultExposure && targetMultiplier > 0) {
                 if (targetMultiplier === 10.0) targetMultiplier = 3.0;
                 else if (targetMultiplier === 3.0) targetMultiplier = 1.5;
@@ -201,16 +197,13 @@ app.post('/api/play', (req, res) => {
         // 🎲 3. SINGLE PLAY GAMES (Lucky Dice, Coin Flip)
         // ==========================================================
         else {
-            let winChance = 0.48; 
+            let winChance = 0.45; // Base casino edge for dice/coins
             
-            if (isSafeguardMode) winChance = 0.35; 
-            else if (isEngagementMode) winChance = 0.52; 
-
-            if (user.currentLossStreak >= 3 && !isSafeguardMode && !isWhaleBet) winChance = 0.65; 
-
-            // WHALE PENALTY
+            // If whale, reduce win chance heavily
             if (isWhaleBet || (bet * 1.80 > maxVaultExposure)) {
-                winChance = 0.10; // Only 10% chance to win a massive single bet
+                winChance = 0.15; // Only 15% chance to win a massive single bet
+            } else if (user.currentLossStreak >= 3) {
+                winChance = 0.60; // Pity system to keep them engaged
             }
 
             let isWin = Math.random() < winChance;
@@ -224,6 +217,7 @@ app.post('/api/play', (req, res) => {
             }
         }
 
+        // Streak Trackers
         if (!isCrashGame) {
             if (calculatedWinAmount === 0) {
                 user.currentLossStreak += 1; user.currentWinStreak = 0;
