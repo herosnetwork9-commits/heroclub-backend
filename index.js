@@ -273,5 +273,12 @@ app.post('/api/lose', (req, res) => {
     } catch (e) { res.json({ success: false }); }
 });
 
+
+
+
+// Add this to your index.js
+app.get('/ping', (req, res) => {
+    res.status(200).send('I am awake!');
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`HeroClub Master Brain running on port ${PORT}`));
